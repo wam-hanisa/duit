@@ -85,6 +85,7 @@ export function getHiveMindPullMode() {
 }
 
 export function isHiveMindEnabled() {
+  if (config.hiveMind?.enabled === false) return false;
   return !!(getBaseUrl() && getApiKey());
 }
 

@@ -11,9 +11,11 @@
     "setup": "node setup.js",
     "env:encrypt": "node scripts/envrypt.js encrypt",
     "start": "node index.js",
-    "dev": "DRY_RUN=true node index.js",
+    "dev": "cross-env DRY_RUN=true node index.js",
+    "test": "npm run test:syntax",
+    "test:syntax": "find . -path ./node_modules -prune -o -name '*.js' -exec node --check {} \\;",
     "test:screen": "node test/test-screening.js",
-    "test:agent": "DRY_RUN=true node test/test-agent.js",
+    "test:agent": "cross-env DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js"
   },
   "knip": {
@@ -33,5 +35,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0"
   }
 }
