@@ -30,12 +30,30 @@ import { execSync, spawn } from "child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
+const MIN_VOLATILITY_TIMEFRAME = "30m";
+const TIMEFRAME_MINUTES = {
+  "5m": 5,
+  "15m": 15,
+  "30m": 30,
+  "1h": 60,
+  "2h": 120,
+  "4h": 240,
+  "12h": 720,
+  "24h": 1440,
+};
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
 
 function numberOrNull(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function getVolatilityTimeframe(sourceTimeframe) {
+  const source = String(sourceTimeframe || "").trim();
+  const sourceMinutes = TIMEFRAME_MINUTES[source];
+  const minMinutes = TIMEFRAME_MINUTES[MIN_VOLATILITY_TIMEFRAME];
+  return sourceMinutes != null && sourceMinutes >= minMinutes ? source : MIN_VOLATILITY_TIMEFRAME;
 }
 
 function poolDetailTvl(pool) {
@@ -54,10 +72,10 @@ function poolDetailVolatility(pool) {
   return numberOrNull(pool?.volatility);
 }
 
-async function fetchFreshPoolDetail(poolAddress) {
-  const timeframe = encodeURIComponent(config.screening.timeframe || "5m");
+async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.timeframe || "5m") {
+  const encodedTimeframe = encodeURIComponent(timeframe);
   const filter = encodeURIComponent(`pool_address=${poolAddress}`);
-  const url = `${POOL_DISCOVERY_BASE}/pools?page_size=1&filter_by=${filter}&timeframe=${timeframe}`;
+  const url = `${POOL_DISCOVERY_BASE}/pools?page_size=1&filter_by=${filter}&timeframe=${encodedTimeframe}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Pool Discovery API error: ${res.status} ${res.statusText}`);
   const data = await res.json();
@@ -111,11 +129,24 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
-  const volatility = poolDetailVolatility(detail);
+  const volatilityTimeframe = getVolatilityTimeframe(config.screening.timeframe || "5m");
+  let volatilityDetail = detail;
+  if ((config.screening.timeframe || "5m") !== volatilityTimeframe) {
+    try {
+      volatilityDetail = await fetchFreshPoolDetail(args.pool_address, volatilityTimeframe);
+    } catch (error) {
+      return {
+        pass: false,
+        reason: `Could not verify pool ${volatilityTimeframe} volatility before deploy: ${error.message}`,
+      };
+    }
+  }
+
+  const volatility = poolDetailVolatility(volatilityDetail);
   if (volatility == null || volatility <= 0) {
     return {
       pass: false,
-      reason: `Pool volatility ${volatility ?? "unknown"} is unusable. Refusing deploy.`,
+      reason: `Pool ${volatilityTimeframe} volatility ${volatility ?? "unknown"} is unusable. Refusing deploy.`,
     };
   }
 
@@ -240,15 +271,20 @@ const toolMap = {
       }
       // Delay restart so this tool response (and Telegram message) gets sent first
       setTimeout(() => {
-        const child = spawn(process.execPath, process.argv.slice(1), {
-          detached: true,
-          stdio: "inherit",
-          cwd: process.cwd(),
-        });
-        child.unref();
+        if (!process.env.pm_id) {
+          const child = spawn(process.execPath, process.argv.slice(1), {
+            detached: true,
+            stdio: "inherit",
+            cwd: process.cwd(),
+          });
+          child.unref();
+        }
         process.exit(0);
       }, 3000);
-      return { success: true, updated: true, message: `Updated! Restarting in 3s...\n${result}` };
+      const restartMode = process.env.pm_id
+        ? "PM2 detected — exiting in 3s so PM2 can restart the managed process."
+        : "Restarting in 3s...";
+      return { success: true, updated: true, message: `Updated! ${restartMode}\n${result}` };
     } catch (e) {
       return { success: false, error: e.message };
     }
