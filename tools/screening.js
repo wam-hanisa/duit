@@ -77,6 +77,9 @@ function getRawPoolScreeningRejectReason(pool, s) {
   if (feeActiveTvlRatio == null || feeActiveTvlRatio < s.minFeeActiveTvlRatio) {
     return `fee/active-TVL ${feeActiveTvlRatio ?? "unknown"} below minFeeActiveTvlRatio ${s.minFeeActiveTvlRatio}`;
   }
+  if (s.maxFeeActiveTvlRatio != null && feeActiveTvlRatio > s.maxFeeActiveTvlRatio) {
+    return `fee/active-TVL ${feeActiveTvlRatio} above maxFeeActiveTvlRatio ${s.maxFeeActiveTvlRatio} — likely pump in progress`;
+  }
   if (!isUsableVolatility(volatility)) {
     return `volatility ${volatility ?? "unknown"} is unusable`;
   }
@@ -362,6 +365,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const minTvl = Number(config.screening.minTvl ?? 0);
   const maxTvl = config.screening.maxTvl == null ? null : Number(config.screening.maxTvl);
   const minFeeActiveTvlRatio = Number(config.screening.minFeeActiveTvlRatio ?? 0);
+  const maxFeeActiveTvlRatio = config.screening.maxFeeActiveTvlRatio == null ? null : Number(config.screening.maxFeeActiveTvlRatio);
 
   const eligible = pools
     .filter((p) => {
@@ -377,6 +381,10 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       const feeActiveTvlRatio = Number(p.fee_active_tvl_ratio);
       if (Number.isFinite(minFeeActiveTvlRatio) && minFeeActiveTvlRatio > 0 && (!Number.isFinite(feeActiveTvlRatio) || feeActiveTvlRatio < minFeeActiveTvlRatio)) {
         pushFilteredReason(filteredOut, p, `fee/active-TVL ${Number.isFinite(feeActiveTvlRatio) ? feeActiveTvlRatio : "unknown"} below minFeeActiveTvlRatio ${minFeeActiveTvlRatio}`);
+        return false;
+      }
+      if (maxFeeActiveTvlRatio != null && Number.isFinite(feeActiveTvlRatio) && feeActiveTvlRatio > maxFeeActiveTvlRatio) {
+        pushFilteredReason(filteredOut, p, `fee/active-TVL ${feeActiveTvlRatio} above maxFeeActiveTvlRatio ${maxFeeActiveTvlRatio} — likely pump in progress`);
         return false;
       }
       if (!isUsableVolatility(p.volatility)) {
