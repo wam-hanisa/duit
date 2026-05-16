@@ -104,6 +104,7 @@ export function trackPosition({
     confirmed_trailing_exit_reason: null,
     confirmed_trailing_exit_until: null,
     trailing_active: false,
+    negative_since: null,
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
   save(state);
@@ -396,6 +397,16 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     log("state", `Position ${position_address} trailing TP activated (confirmed peak: ${pos.peak_pnl_pct}%)`);
   }
 
+  // Update negative PnL tracking (for break-even exit)
+  if (!pnl_pct_suspicious && currentPnlPct != null) {
+    if (currentPnlPct < 0 && !pos.negative_since) {
+      pos.negative_since = new Date().toISOString();
+      changed = true;
+    } else if (currentPnlPct >= 0 && pos.negative_since) {
+      // Don't clear yet — break-even exit check needs it below
+    }
+  }
+
   // Update OOR state
   if (in_range === false && !pos.out_of_range_since) {
     pos.out_of_range_since = new Date().toISOString();
@@ -456,6 +467,39 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
       action: "LOW_YIELD",
       reason: `Low yield: fee/TVL ${fee_per_tvl_24h.toFixed(2)}% < min ${mgmtConfig.minFeePerTvl24h}% (age: ${age_minutes ?? "?"}m)`,
     };
+  }
+
+  // ── Break-even exit: close when PnL recovers after prolonged negative period ───
+  if (
+    mgmtConfig.breakEvenExitEnabled &&
+    !pnl_pct_suspicious &&
+    currentPnlPct != null &&
+    pos.negative_since
+  ) {
+    const breakEvenPct = mgmtConfig.breakEvenExitPct ?? 1;
+    const breakEvenMinAge = mgmtConfig.breakEvenMinAge ?? 30;
+    const breakEvenMinNegMinutes = mgmtConfig.breakEvenMinNegativeMinutes ?? 15;
+    const minutesNegative = Math.floor((Date.now() - new Date(pos.negative_since).getTime()) / 60000);
+
+    if (
+      currentPnlPct >= breakEvenPct &&
+      (age_minutes == null || age_minutes >= breakEvenMinAge) &&
+      minutesNegative >= breakEvenMinNegMinutes
+    ) {
+      // Clear negative_since before returning
+      pos.negative_since = null;
+      save(state);
+      return {
+        action: "BREAK_EVEN_EXIT",
+        reason: `Break-even exit: PnL recovered to +${currentPnlPct.toFixed(2)}% after ${minutesNegative}m negative — closing to free capital`,
+      };
+    }
+  }
+
+  // Clear negative_since when PnL is positive (and no break-even exit triggered)
+  if (!pnl_pct_suspicious && currentPnlPct != null && currentPnlPct >= 0 && pos.negative_since) {
+    pos.negative_since = null;
+    save(state);
   }
 
   return null;

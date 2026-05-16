@@ -34,6 +34,7 @@ import { stageSignals } from "./signal-tracker.js";
 import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
+import { checkWhaleActivity, clearWhaleSnapshot } from "./whale-watch.js";
 
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const isMain = entrypointPath
@@ -331,10 +332,10 @@ MANAGEMENT ACTION REQUIRED — ${actionPositions.length} position(s)
 ${actionBlocks}
 
 RULES:
-- CLOSE: call close_position only — it handles fee claiming internally, do NOT call claim_fees first
+- CLOSE: call close_position only — it handles fee claiming internally, do NOT call claim_fees first. IMPORTANT: always pass the reason field with the rule text (e.g. reason: "Rule 1: stop loss")
 - CLAIM: call claim_fees with position address
 - INSTRUCTION: evaluate the instruction condition. If met → close_position. If not → HOLD, do nothing.
-- ⚡ exit alerts: close immediately, no exceptions
+- ⚡ exit alerts: close immediately, no exceptions. Pass reason: "trailing TP: <reason text>"
 
 Execute the required actions. Do NOT re-evaluate CLOSE/CLAIM — rules already applied. Just execute.
 After executing, write a brief one-line result per position.
@@ -618,10 +619,12 @@ Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${
 PRE-LOADED CANDIDATES (${passing.length} pools):
 ${candidateBlocks.join("\n\n")}
 
+CRITICAL: You MUST call deploy_position or respond with ⛔ NO DEPLOY. Do NOT write analysis without a tool call. Writing "I will proceed with deploying" is NOT the same as calling the tool.
+
 STEPS:
 1. Decide if any candidate is actually worth deploying. One surviving candidate is not automatically good enough.
 2. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
-3. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
+3. Call deploy_position IMMEDIATELY — do not write your analysis first. Call the tool, then write the report using the result. (active_bin is pre-fetched above — no need to call get_active_bin).
    bins_below = round(${config.strategy.minBinsBelow} + (candidate volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}].
    pass deploy_position.volatility = the candidate volatility value.
    For single-side SOL deploys, do not invent upside:
@@ -695,19 +698,45 @@ IMPORTANT:
         },
       });
     screenReport = content;
-    if (/⛔\s*NO DEPLOY/i.test(content)) {
+
+    // Retry: LLM wrote "I will deploy X" but never called the tool
+    if (!deployAttempted && !deploySucceeded && !/⛔\s*NO DEPLOY/i.test(content)) {
+      const chosenMatch = content.match(/(?:proceed with|deploying to|choose|chose|pick|selected)\s+(\S+)/i);
+      if (chosenMatch) {
+        log("cron", `Screening retry: LLM said "${chosenMatch[0]}" but never called deploy_position — nudging`);
+        const { content: retryContent } = await agentLoop(
+          `You analyzed candidates and chose to deploy but did NOT call the deploy_position tool. Call deploy_position NOW for your chosen pool. Do not re-analyze. Just execute the deploy.\n\nYour previous analysis:\n${content.slice(0, 2000)}`,
+          5, [], "SCREENER", config.llm.screeningModel, 2048, {
+            onToolStart: async ({ name }) => {
+              if (name === "deploy_position") deployAttempted = true;
+              await liveMessage?.toolStart(name);
+            },
+            onToolFinish: async ({ name, result, success }) => {
+              if (name === "deploy_position") {
+                deployAttempted = true;
+                deploySucceeded = Boolean(success && result?.success !== false && !result?.error && !result?.blocked);
+              }
+              await liveMessage?.toolFinish(name, result, success);
+            },
+          }
+        );
+        if (deploySucceeded) screenReport = retryContent;
+      }
+    }
+
+    if (/⛔\s*NO DEPLOY/i.test(screenReport)) {
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
         summary: "LLM chose no deploy",
-        reason: stripThink(content).slice(0, 500),
+        reason: stripThink(screenReport).slice(0, 500),
       });
     } else if (!deploySucceeded) {
       appendDecision({
         type: "no_deploy",
         actor: "SCREENER",
         summary: deployAttempted ? "Deploy attempt did not succeed" : "No successful deploy in screening cycle",
-        reason: stripThink(content).slice(0, 500),
+        reason: stripThink(screenReport).slice(0, 500),
       });
     }
   } catch (error) {
@@ -811,6 +840,29 @@ Summarize the current portfolio health, total fees earned, and performance of al
             log("state", `[PnL poll] Deterministic close rule: ${p.pair} — Rule ${closeRule.rule}: ${closeRule.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
           }
           break;
+        }
+        // ── Whale Watch: detect coordinated whale dumps before they wreck IL ──
+        if (config.management.whaleWatchEnabled) {
+          try {
+            const trackedPos = getTrackedPosition(p.position);
+            const whaleVerdict = await checkWhaleActivity(p, trackedPos, config.management);
+            if (whaleVerdict?.detected) {
+              const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
+              const sinceLastTrigger = Date.now() - _pollTriggeredAt;
+              if (sinceLastTrigger >= cooldownMs) {
+                _pollTriggeredAt = Date.now();
+                log("state", `[PnL poll] 🐋 Whale dump detected: ${p.pair} — ${whaleVerdict.reason} — triggering management`);
+                // Set position note so the management LLM knows why it's closing
+                setPositionInstruction(p.position, `🐋 WHALE DUMP — close immediately. ${whaleVerdict.reason}`);
+                runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
+              } else {
+                log("state", `[PnL poll] 🐋 Whale dump detected: ${p.pair} — ${whaleVerdict.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
+              }
+              break;
+            }
+          } catch (e) {
+            log("whale_watch_warn", `Whale check failed for ${p.position}: ${e.message}`);
+          }
         }
       }
     } finally {
@@ -931,6 +983,23 @@ function getDeterministicCloseRule(position, managementConfig) {
     (position.age_minutes ?? 0) >= 60
   ) {
     return { action: "CLOSE", rule: 5, reason: "low yield" };
+  }
+  // Rule 6: break-even exit (handled primarily by state.js updatePnlAndCheckExits,
+  // this is a backup for the deterministic path)
+  if (managementConfig.breakEvenExitEnabled) {
+    const tracked = getTrackedPosition(position.position);
+    if (
+      tracked?.negative_since &&
+      position.pnl_pct != null &&
+      position.pnl_pct >= (managementConfig.breakEvenExitPct ?? 1)
+    ) {
+      const minutesNegative = Math.floor((Date.now() - new Date(tracked.negative_since).getTime()) / 60000);
+      const minAge = managementConfig.breakEvenMinAge ?? 30;
+      const minNeg = managementConfig.breakEvenMinNegativeMinutes ?? 15;
+      if ((position.age_minutes ?? 0) >= minAge && minutesNegative >= minNeg) {
+        return { action: "CLOSE", rule: 6, reason: `break-even exit: PnL +${position.pnl_pct.toFixed(2)}% after ${minutesNegative}m negative` };
+      }
+    }
   }
   return null;
 }

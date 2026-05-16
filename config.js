@@ -117,6 +117,19 @@ export const config = {
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
     trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
+    // Break-even exit — close when PnL recovers after prolonged negative period
+    breakEvenExitEnabled:         u.breakEvenExitEnabled         ?? false,
+    breakEvenExitPct:             u.breakEvenExitPct             ?? 1,    // close when PnL reaches this % (e.g. 1 = +1%)
+    breakEvenMinAge:              u.breakEvenMinAge              ?? 30,   // position must be at least X minutes old
+    breakEvenMinNegativeMinutes:  u.breakEvenMinNegativeMinutes  ?? 15,   // must have been negative for at least X minutes
+    // Whale watch — detect whale dumps and close before big IL
+    whaleWatchEnabled:            u.whaleWatchEnabled            ?? false,
+    whaleDumpScoreThreshold:      u.whaleDumpScoreThreshold      ?? 3,    // total score >= this triggers close
+    whaleHolderBigDropPct:        u.whaleHolderBigDropPct        ?? 5,    // big drop = whale moving large supply (+3 score)
+    whaleHolderSmallDropPct:      u.whaleHolderSmallDropPct      ?? 3,    // small drop on any top10 holder (+1 score)
+    whaleFastDropPct:             u.whaleFastDropPct             ?? 3,    // PnL drop in 30s window (+2 score)
+    whaleCrashDropPct:            u.whaleCrashDropPct            ?? 6,    // PnL crash in 30s window (+3 score)
+    whaleTvlDropPct:              u.whaleTvlDropPct              ?? 10,   // pool TVL drop in 30s window (+1 score)
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
