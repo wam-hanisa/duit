@@ -149,6 +149,13 @@ async function validateDeployPoolThresholds(args) {
       reason: `Pool ${volatilityTimeframe} volatility ${volatility ?? "unknown"} is unusable. Refusing deploy.`,
     };
   }
+  const maxVolatility = numberOrNull(config.screening.maxVolatility);
+  if (maxVolatility != null && maxVolatility > 0 && volatility > maxVolatility) {
+    return {
+      pass: false,
+      reason: `Pool ${volatilityTimeframe} volatility ${volatility.toFixed(2)} exceeds maxVolatility ${maxVolatility}. High-vol pools historically produce catastrophic losses — refusing deploy.`,
+    };
+  }
 
   const actualBinStep = poolDetailBinStep(detail);
   const minStep = numberOrNull(config.screening.minBinStep);
@@ -710,6 +717,84 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `volatility ${args.volatility} is invalid. Refusing deploy because the volatility feed is unusable.`,
         };
+      }
+      const maxVolatility = numberOrNull(config.screening.maxVolatility);
+      if (
+        maxVolatility != null &&
+        maxVolatility > 0 &&
+        Number.isFinite(requestedVolatility) &&
+        requestedVolatility > maxVolatility
+      ) {
+        return {
+          pass: false,
+          reason: `Candidate volatility ${requestedVolatility.toFixed(2)} exceeds maxVolatility ${maxVolatility}. High-vol pools (Wish/Yae/BABYTROLL pattern) historically produce catastrophic losses — refusing deploy.`,
+        };
+      }
+
+      // ─── Pre-Deploy Whale + Re-Entry Cooldown Hook ─────────────
+      // Catches three loss patterns observed in May 14–17 forensics:
+      //   1. Revenge re-entry into same pool minutes after a profitable "pumped above" close
+      //   2. Re-entry into a pool that recently produced a negative close
+      //   3. Pools where a single non-pool holder concentration > maxSingleHolderPct (whale risk)
+      try {
+        const poolMemory = args.pool_address ? getPoolMemory({ pool_address: args.pool_address }) : null;
+        if (poolMemory && poolMemory.known) {
+          const lastDeploy = Array.isArray(poolMemory.history) && poolMemory.history.length
+            ? poolMemory.history[poolMemory.history.length - 1]
+            : null;
+          const lastClosedAtMs = lastDeploy?.closed_at ? Date.parse(lastDeploy.closed_at) : null;
+          const lastPnl = numberOrNull(lastDeploy?.pnl_pct);
+          const lastReason = String(lastDeploy?.close_reason || "").toLowerCase();
+          const minutesSinceLastClose = lastClosedAtMs ? (Date.now() - lastClosedAtMs) / 60000 : null;
+
+          // Block re-entry after a recent negative close
+          const reentryAfterLossHours = numberOrNull(config.screening.reentryAfterLossHours) ?? 6;
+          if (
+            lastPnl != null &&
+            lastPnl < 0 &&
+            minutesSinceLastClose != null &&
+            minutesSinceLastClose < reentryAfterLossHours * 60
+          ) {
+            return {
+              pass: false,
+              reason: `Pool ${args.pool_address.slice(0, 8)}… closed at ${lastPnl.toFixed(2)}% ${minutesSinceLastClose.toFixed(0)}m ago. Cooldown ${reentryAfterLossHours}h after a loss — refusing re-entry.`,
+            };
+          }
+
+          // Block immediate revenge re-entry after a "pumped above range" exit (mean-reversion risk)
+          const reentryAfterPumpMinutes = numberOrNull(config.screening.reentryAfterPumpMinutes) ?? 60;
+          if (
+            lastReason.includes("pumped") &&
+            minutesSinceLastClose != null &&
+            minutesSinceLastClose < reentryAfterPumpMinutes
+          ) {
+            return {
+              pass: false,
+              reason: `Pool ${args.pool_address.slice(0, 8)}… just pumped out of range ${minutesSinceLastClose.toFixed(0)}m ago. Cooldown ${reentryAfterPumpMinutes}m after a pump-exit — refusing re-entry (mean-reversion risk).`,
+            };
+          }
+        }
+      } catch (e) {
+        log("executor_warn", `Pool memory pre-deploy check failed (continuing): ${e.message}`);
+      }
+
+      const maxSingleHolderPct = numberOrNull(config.screening.maxSingleHolderPct);
+      if (maxSingleHolderPct != null && maxSingleHolderPct > 0 && args.base_mint) {
+        try {
+          const holdersResult = await getTokenHolders({ mint: args.base_mint, limit: 20 });
+          const realHolders = Array.isArray(holdersResult?.holders)
+            ? holdersResult.holders.filter((h) => !h.is_pool)
+            : [];
+          const topPct = realHolders.length ? Number(realHolders[0]?.pct) || 0 : 0;
+          if (topPct > maxSingleHolderPct) {
+            return {
+              pass: false,
+              reason: `Top single non-pool holder owns ${topPct.toFixed(2)}% of ${args.base_mint.slice(0, 8)}… (limit ${maxSingleHolderPct}%). Whale concentration risk — refusing deploy.`,
+            };
+          }
+        } catch (e) {
+          log("executor_warn", `Pre-deploy whale-holder check failed (continuing): ${e.message}`);
+        }
       }
       if (
         args.downside_pct == null &&

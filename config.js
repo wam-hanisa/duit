@@ -64,6 +64,10 @@ export const config = {
     excludeHighSupplyConcentration: u.excludeHighSupplyConcentration ?? true,
     minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? 0.05,
     maxFeeActiveTvlRatio: u.maxFeeActiveTvlRatio ?? null, // null = no cap; set to e.g. 2.0 to block extreme pump pools
+    maxVolatility: u.maxVolatility ?? null, // null = no cap; pools with volatility above this are rejected (e.g. 5)
+    maxSingleHolderPct: u.maxSingleHolderPct ?? null, // null = no cap; reject if any single non-pool holder owns more than this %
+    reentryAfterLossHours: u.reentryAfterLossHours ?? 6, // block same pool re-entry for X hours after a negative close
+    reentryAfterPumpMinutes: u.reentryAfterPumpMinutes ?? 60, // block same pool re-entry for X minutes after a "pumped above" close
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl !== undefined ? u.maxTvl : 150_000,
     minVolume:         u.minVolume         ?? 500,
