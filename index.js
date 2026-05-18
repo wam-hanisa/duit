@@ -867,6 +867,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
                 _pollTriggeredAt = Date.now();
                 log("state", `[PnL poll] 🌊 Liquidity exit cascade: ${p.pair} — ${liqVerdict.reason} — triggering management`);
                 setPositionInstruction(p.position, `🌊 LP EXIT CASCADE — close immediately. ${liqVerdict.reason}`);
+                // Immediate alert so user sees what's happening before the close lands
+                if (telegramEnabled()) {
+                  sendMessage(`🌊 LP Exit Cascade — ${p.pair}\nTVL dropped ${liqVerdict.drop_pct.toFixed(1)}% in 30s ($${Math.round(liqVerdict.prev_tvl).toLocaleString()} → $${Math.round(liqVerdict.current_tvl).toLocaleString()})\n\nClosing position now...`).catch(() => {});
+                }
                 runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
               } else {
                 log("state", `[PnL poll] 🌊 Liquidity exit cascade: ${p.pair} — ${liqVerdict.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
