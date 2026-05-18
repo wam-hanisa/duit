@@ -42,8 +42,8 @@
   "maxTop10Pct": 60,
   "allowedLaunchpads": [],
   "blockedLaunchpads": [],
-  "minTokenAgeHours": null,
-  "maxTokenAgeHours": null,
+  "minTokenAgeHours": 2,
+  "maxTokenAgeHours": 36,
   "athFilterPct": null,
 
   "minClaimAmount": 5,
