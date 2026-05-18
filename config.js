@@ -126,6 +126,10 @@ export const config = {
     breakEvenExitPct:             u.breakEvenExitPct             ?? 1,    // close when PnL reaches this % (e.g. 1 = +1%)
     breakEvenMinAge:              u.breakEvenMinAge              ?? 30,   // position must be at least X minutes old
     breakEvenMinNegativeMinutes:  u.breakEvenMinNegativeMinutes  ?? 15,   // must have been negative for at least X minutes
+    // SOL momentum check — skip deploys during SOL crashes
+    solMomentumCheckEnabled:      u.solMomentumCheckEnabled      ?? false,
+    solMomentumSkipDropPct:       u.solMomentumSkipDropPct       ?? 2,    // SOL -X% in 15m → skip deploy
+    solMomentumCautionDropPct:    u.solMomentumCautionDropPct    ?? 1,    // SOL -X% in 15m → log caution (still deploy)
     // Whale watch — detect whale dumps and close before big IL
     whaleWatchEnabled:            u.whaleWatchEnabled            ?? false,
     whaleDumpScoreThreshold:      u.whaleDumpScoreThreshold      ?? 3,    // total score >= this triggers close

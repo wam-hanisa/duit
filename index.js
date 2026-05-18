@@ -423,6 +423,32 @@ export async function runScreeningCycle({ silent = false } = {}) {
     _screeningBusy = false;
     return screenReport;
   }
+
+  // SOL momentum check — skip deploy if SOL is crashing (don't fight the market)
+  if (config.management.solMomentumCheckEnabled) {
+    try {
+      const { checkSolMomentum } = await import("./sol-momentum.js");
+      const momentum = await checkSolMomentum(config.management);
+      if (momentum.verdict === "skip") {
+        log("cron", `Screening skipped — ${momentum.reason}`);
+        screenReport = `📉 Screening skipped — ${momentum.reason}`;
+        appendDecision({
+          type: "skip",
+          actor: "SCREENER",
+          summary: "SOL momentum unfavorable",
+          reason: momentum.reason,
+        });
+        _screeningBusy = false;
+        return screenReport;
+      }
+      if (momentum.verdict === "caution") {
+        log("cron", `SOL momentum caution — ${momentum.reason} (proceeding anyway)`);
+      }
+    } catch (e) {
+      log("sol_momentum_warn", `SOL momentum check failed: ${e.message} — proceeding without it`);
+    }
+  }
+
   if (!silent && telegramEnabled()) {
     liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
   }
