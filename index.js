@@ -438,11 +438,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
           summary: "SOL momentum unfavorable",
           reason: momentum.reason,
         });
+        // Explicit Telegram notification — at this point no liveMessage exists yet
+        if (!silent && telegramEnabled()) {
+          sendMessage(`📉 Screening Skipped\n\n${momentum.reason}\n\nWill retry next cycle.`).catch(() => {});
+        }
         _screeningBusy = false;
         return screenReport;
       }
       if (momentum.verdict === "caution") {
         log("cron", `SOL momentum caution — ${momentum.reason} (proceeding anyway)`);
+        if (!silent && telegramEnabled()) {
+          sendMessage(`⚠️ ${momentum.reason}`).catch(() => {});
+        }
       }
     } catch (e) {
       log("sol_momentum_warn", `SOL momentum check failed: ${e.message} — proceeding without it`);
