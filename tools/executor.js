@@ -627,6 +627,30 @@ export async function executeTool(name, args) {
         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
       } else if (name === "close_position") {
         notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.reason || null }).catch(() => {});
+        // Record smart-wallet quality scoring for each wallet present in this pool
+        const closedPoolAddr = result.pool || args.pool_address;
+        const closedPnl = Number(result.pnl_pct);
+        if (closedPoolAddr && Number.isFinite(closedPnl)) {
+          (async () => {
+            try {
+              const swCheck = await checkSmartWalletsOnPool({ pool_address: closedPoolAddr });
+              const presentWallets = swCheck?.in_pool || [];
+              if (presentWallets.length > 0) {
+                const { recordWalletAppearance } = await import("../smart-wallet-quality.js");
+                for (const w of presentWallets) {
+                  recordWalletAppearance({
+                    address: w.address,
+                    pool: closedPoolAddr,
+                    pnl_pct: closedPnl,
+                    pair: result.pool_name,
+                  });
+                }
+              }
+            } catch (e) {
+              log("smart_wallet_quality_warn", `Failed to record wallet appearances: ${e.message}`);
+            }
+          })();
+        }
         // Free whale-watch snapshot memory for closed positions
         if (args.position_address) {
           import("../whale-watch.js").then(({ clearWhaleSnapshot }) => clearWhaleSnapshot(args.position_address)).catch(() => {});
