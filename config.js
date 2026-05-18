@@ -134,6 +134,15 @@ export const config = {
     whaleFastDropPct:             u.whaleFastDropPct             ?? 3,    // PnL drop in 30s window (+2 score)
     whaleCrashDropPct:            u.whaleCrashDropPct            ?? 6,    // PnL crash in 30s window (+3 score)
     whaleTvlDropPct:              u.whaleTvlDropPct              ?? 10,   // pool TVL drop in 30s window (+1 score)
+    // Smart-wallet auto-maintenance — auto-add high performers, auto-remove inactive
+    smartWalletAutoAddEnabled:    u.smartWalletAutoAddEnabled    ?? false,
+    smartWalletAutoRemoveEnabled: u.smartWalletAutoRemoveEnabled ?? false,
+    smartWalletMinWinRate:        u.smartWalletMinWinRate        ?? 0.6,  // LPer must have >=60% win rate to auto-add
+    smartWalletMinRoi:            u.smartWalletMinRoi            ?? 0.1,  // LPer must have >=10% ROI to auto-add
+    smartWalletMaxTotal:          u.smartWalletMaxTotal          ?? 50,   // cap on total tracked wallets
+    smartWalletMaxAddsPerCycle:   u.smartWalletMaxAddsPerCycle   ?? 2,    // max wallets to add per profitable close
+    smartWalletInactivityDays:    u.smartWalletInactivityDays    ?? 30,   // remove if no positions for X days
+    smartWalletPruneIntervalHrs:  u.smartWalletPruneIntervalHrs  ?? 24,   // run prune cron every X hours
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,

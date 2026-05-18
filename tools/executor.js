@@ -400,6 +400,14 @@ const toolMap = {
       whaleFastDropPct: ["management", "whaleFastDropPct"],
       whaleCrashDropPct: ["management", "whaleCrashDropPct"],
       whaleTvlDropPct: ["management", "whaleTvlDropPct"],
+      smartWalletAutoAddEnabled: ["management", "smartWalletAutoAddEnabled"],
+      smartWalletAutoRemoveEnabled: ["management", "smartWalletAutoRemoveEnabled"],
+      smartWalletMinWinRate: ["management", "smartWalletMinWinRate"],
+      smartWalletMinRoi: ["management", "smartWalletMinRoi"],
+      smartWalletMaxTotal: ["management", "smartWalletMaxTotal"],
+      smartWalletMaxAddsPerCycle: ["management", "smartWalletMaxAddsPerCycle"],
+      smartWalletInactivityDays: ["management", "smartWalletInactivityDays"],
+      smartWalletPruneIntervalHrs: ["management", "smartWalletPruneIntervalHrs"],
       solMode: ["management", "solMode"],
       minSolToOpen: ["management", "minSolToOpen"],
       deployAmountSol: ["management", "deployAmountSol"],
@@ -627,6 +635,16 @@ export async function executeTool(name, args) {
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
+        }
+        // Auto-add smart wallets from profitable closes (>= +1% PnL)
+        const closedPnlPct = Number(result.pnl_pct);
+        if (Number.isFinite(closedPnlPct) && closedPnlPct >= 1 && config.management.smartWalletAutoAddEnabled) {
+          const poolAddr = result.pool || args.pool_address;
+          if (poolAddr) {
+            import("../smart-wallet-maintenance.js").then(({ autoAddFromPool }) =>
+              autoAddFromPool({ poolAddress: poolAddr, mgmtConfig: config.management })
+            ).catch((e) => log("smart_wallet_maint_warn", `Auto-add hook failed: ${e.message}`));
+          }
         }
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {

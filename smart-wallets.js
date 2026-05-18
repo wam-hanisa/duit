@@ -51,6 +51,19 @@ export function listSmartWallets() {
   return { total: wallets.length, wallets };
 }
 
+/**
+ * Mark a wallet as active (called when wallet is seen with positions).
+ * Used by smart-wallet-maintenance.js to track inactivity.
+ */
+export function markWalletActive(address) {
+  const data = loadWallets();
+  const wallet = data.wallets.find((w) => w.address === address);
+  if (!wallet) return false;
+  wallet.lastActiveAt = new Date().toISOString();
+  saveWallets(data);
+  return true;
+}
+
 // Cache wallet positions for 5 minutes to avoid hammering RPC
 const _cache = new Map(); // address -> { positions, fetchedAt }
 const CACHE_TTL = 5 * 60 * 1000;

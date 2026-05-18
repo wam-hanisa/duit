@@ -792,6 +792,20 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
+  // Smart wallet maintenance — prune inactive wallets on a schedule
+  const pruneIntervalHrs = Math.max(1, config.management.smartWalletPruneIntervalHrs ?? 24);
+  const smartWalletPruneTask = cron.schedule(`0 */${pruneIntervalHrs} * * *`, async () => {
+    if (!config.management.smartWalletAutoRemoveEnabled) return;
+    if (_managementBusy || _screeningBusy) return;
+    try {
+      const { pruneInactiveWallets } = await import("./smart-wallet-maintenance.js");
+      const result = await pruneInactiveWallets({ mgmtConfig: config.management });
+      log("cron", `Smart wallet prune: ${result.removed || 0} removed, ${result.active || 0} active, ${result.checked || 0} checked`);
+    } catch (e) {
+      log("cron_error", `Smart wallet prune failed: ${e.message}`);
+    }
+  });
+
   // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
   let _pnlPollBusy = false;
   const pnlPollInterval = setInterval(async () => {
@@ -870,7 +884,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
     }
   }, 30_000);
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
+  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog, smartWalletPruneTask];
   // Store interval ref so stopCronJobs can clear it
   _cronTasks._pnlPollInterval = pnlPollInterval;
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
