@@ -47,6 +47,18 @@ export async function getTokenInfo({ query }) {
       bot_holders_pct: t.audit.botHoldersPercentage?.toFixed(2),
       dev_migrations: t.audit.devMigrations,
     } : null,
+    stats_5m: t.stats5m ? {
+      price_change: t.stats5m.priceChange?.toFixed(2),
+      buy_vol: t.stats5m.buyVolume?.toFixed(0),
+      sell_vol: t.stats5m.sellVolume?.toFixed(0),
+      net_buyers: t.stats5m.numNetBuyers,
+    } : null,
+    stats_30m: t.stats30m ? {
+      price_change: t.stats30m.priceChange?.toFixed(2),
+      buy_vol: t.stats30m.buyVolume?.toFixed(0),
+      sell_vol: t.stats30m.sellVolume?.toFixed(0),
+      net_buyers: t.stats30m.numNetBuyers,
+    } : null,
     stats_1h: t.stats1h ? {
       price_change: t.stats1h.priceChange?.toFixed(2),
       buy_vol: t.stats1h.buyVolume?.toFixed(0),

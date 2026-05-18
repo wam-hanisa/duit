@@ -550,6 +550,31 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const netBuyers = ti?.stats_1h?.net_buyers;
       const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
 
+      // ─── Multi-timeframe volume trend ─────────────────────────
+      // Normalize volumes to per-minute, then compare 5m vs 30m vs 1h.
+      // Real momentum: all three trending up. Fake pump: 5m spike only.
+      const vol5m  = Number(ti?.stats_5m?.buy_vol  ?? 0) + Number(ti?.stats_5m?.sell_vol  ?? 0);
+      const vol30m = Number(ti?.stats_30m?.buy_vol ?? 0) + Number(ti?.stats_30m?.sell_vol ?? 0);
+      const vol1h  = Number(ti?.stats_1h?.buy_vol  ?? 0) + Number(ti?.stats_1h?.sell_vol  ?? 0);
+      // Per-minute rates
+      const rate5m  = vol5m / 5;
+      const rate30m = vol30m / 30;
+      const rate1h  = vol1h / 60;
+      let volumeTrend = null;
+      if (rate5m > 0 && rate30m > 0 && rate1h > 0) {
+        // Spike detection: 5m rate is 2x+ higher than 1h rate
+        const spikeRatio = rate5m / rate1h;
+        if (spikeRatio > 2 && rate30m / rate1h < 1.5) {
+          volumeTrend = `🚨 spike_only (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min — likely fake)`;
+        } else if (rate5m > rate30m && rate30m > rate1h) {
+          volumeTrend = `📈 rising (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min — real momentum)`;
+        } else if (rate5m < rate30m && rate30m < rate1h) {
+          volumeTrend = `📉 falling (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min — losing steam)`;
+        } else {
+          volumeTrend = `↔️  mixed (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min)`;
+        }
+      }
+
       // OKX signals
       const okxParts = [
         pool.risk_level     != null ? `risk=${pool.risk_level}`               : null,
@@ -584,6 +609,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
+        volumeTrend ? `  volume_trend: ${volumeTrend}` : null,
         n?.narrative ? `  narrative_untrusted: ${sanitizeUntrustedPromptText(n.narrative, 500)}` : `  narrative_untrusted: none`,
         mem ? `  memory_untrusted: ${sanitizeUntrustedPromptText(mem, 500)}` : null,
       ].filter(Boolean).join("\n");
@@ -1775,6 +1801,16 @@ function getLoneCandidateSkipReason({ pool, sw, n, ti } = {}) {
     return `bot holders ${botPct}% above maximum ${config.screening.maxBotHoldersPct}%`;
   }
   if (!hasNarrative && smartWalletCount === 0) return "only candidate has no narrative and no smart-wallet confirmation";
+  // Multi-timeframe volume sanity check: reject lone candidates with spike-only volume (likely wash)
+  const vol5m = Number(tokenInfo.stats_5m?.buy_vol ?? 0) + Number(tokenInfo.stats_5m?.sell_vol ?? 0);
+  const vol1h = Number(tokenInfo.stats_1h?.buy_vol ?? 0) + Number(tokenInfo.stats_1h?.sell_vol ?? 0);
+  if (vol5m > 0 && vol1h > 0) {
+    const rate5m = vol5m / 5;
+    const rate1h = vol1h / 60;
+    if (rate1h > 0 && rate5m / rate1h > 3 && smartWalletCount === 0) {
+      return `volume spike pattern (5m/1h rate ratio ${(rate5m / rate1h).toFixed(1)}x — likely fake) with no smart-wallet offset`;
+    }
+  }
   return null;
 }
 
