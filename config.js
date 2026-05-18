@@ -126,6 +126,9 @@ export const config = {
     breakEvenExitPct:             u.breakEvenExitPct             ?? 1,    // close when PnL reaches this % (e.g. 1 = +1%)
     breakEvenMinAge:              u.breakEvenMinAge              ?? 30,   // position must be at least X minutes old
     breakEvenMinNegativeMinutes:  u.breakEvenMinNegativeMinutes  ?? 15,   // must have been negative for at least X minutes
+    // Liquidity removal alert — detect LP exodus from pool
+    liquidityExitEnabled:         u.liquidityExitEnabled         ?? false,
+    liquidityExitTvlDropPct:      u.liquidityExitTvlDropPct      ?? 20,   // % TVL drop in one 30s window triggers close
     // Whale watch — detect whale dumps and close before big IL
     whaleWatchEnabled:            u.whaleWatchEnabled            ?? false,
     whaleDumpScoreThreshold:      u.whaleDumpScoreThreshold      ?? 3,    // total score >= this triggers close

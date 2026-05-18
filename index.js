@@ -35,6 +35,7 @@ import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
 import { checkWhaleActivity, clearWhaleSnapshot } from "./whale-watch.js";
+import { checkLiquidityRemoval, clearLiquiditySnapshot } from "./liquidity-removal.js";
 
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const isMain = entrypointPath
@@ -854,6 +855,27 @@ Summarize the current portfolio health, total fees earned, and performance of al
             log("state", `[PnL poll] Deterministic close rule: ${p.pair} — Rule ${closeRule.rule}: ${closeRule.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
           }
           break;
+        }
+        // ── Liquidity Removal Alert: detect LP exit cascade ──
+        if (config.management.liquidityExitEnabled) {
+          try {
+            const liqVerdict = checkLiquidityRemoval(p, config.management);
+            if (liqVerdict?.detected) {
+              const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
+              const sinceLastTrigger = Date.now() - _pollTriggeredAt;
+              if (sinceLastTrigger >= cooldownMs) {
+                _pollTriggeredAt = Date.now();
+                log("state", `[PnL poll] 🌊 Liquidity exit cascade: ${p.pair} — ${liqVerdict.reason} — triggering management`);
+                setPositionInstruction(p.position, `🌊 LP EXIT CASCADE — close immediately. ${liqVerdict.reason}`);
+                runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
+              } else {
+                log("state", `[PnL poll] 🌊 Liquidity exit cascade: ${p.pair} — ${liqVerdict.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
+              }
+              break;
+            }
+          } catch (e) {
+            log("liquidity_warn", `Liquidity check failed for ${p.position}: ${e.message}`);
+          }
         }
         // ── Whale Watch: detect coordinated whale dumps before they wreck IL ──
         if (config.management.whaleWatchEnabled) {

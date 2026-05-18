@@ -393,6 +393,8 @@ const toolMap = {
       breakEvenExitPct: ["management", "breakEvenExitPct"],
       breakEvenMinAge: ["management", "breakEvenMinAge"],
       breakEvenMinNegativeMinutes: ["management", "breakEvenMinNegativeMinutes"],
+      liquidityExitEnabled: ["management", "liquidityExitEnabled"],
+      liquidityExitTvlDropPct: ["management", "liquidityExitTvlDropPct"],
       whaleWatchEnabled: ["management", "whaleWatchEnabled"],
       whaleDumpScoreThreshold: ["management", "whaleDumpScoreThreshold"],
       whaleHolderBigDropPct: ["management", "whaleHolderBigDropPct"],
@@ -630,6 +632,7 @@ export async function executeTool(name, args) {
         // Free whale-watch snapshot memory for closed positions
         if (args.position_address) {
           import("../whale-watch.js").then(({ clearWhaleSnapshot }) => clearWhaleSnapshot(args.position_address)).catch(() => {});
+          import("../liquidity-removal.js").then(({ clearLiquiditySnapshot }) => clearLiquiditySnapshot(args.position_address)).catch(() => {});
         }
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
