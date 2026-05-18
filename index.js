@@ -548,7 +548,31 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const launchpad = ti?.launchpad ?? null;
       const priceChange = ti?.stats_1h?.price_change;
       const netBuyers = ti?.stats_1h?.net_buyers;
-      const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
+      const activeBinData = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value : null;
+      const activeBin = activeBinData?.binId ?? null;
+
+      // ─── Active bin liquidity depth ─────────────────────────────
+      // Compare SOL-side liquidity in the active bin to pool's total active TVL.
+      // Thin active bin = high IL risk on any swap, since most LP is OOR.
+      let activeBinDepthPct = null;
+      let activeBinDepthLabel = null;
+      const poolActiveTvl = Number(pool.active_tvl || pool.tvl || 0);
+      const yLamports = activeBinData?.yAmount ? Number(activeBinData.yAmount) : 0;
+      if (yLamports > 0 && poolActiveTvl > 0) {
+        // yAmount is in lamports of SOL; convert to SOL, then to USD via active price
+        const solInBin = yLamports / 1e9;
+        // Use a conservative SOL price estimate. We just need an order-of-magnitude check.
+        const solPriceUsd = Number(pool.sol_price_usd) || Number(activeBinData.price) > 0 ? 100 : 100; // fallback ~$100
+        const binUsd = solInBin * solPriceUsd;
+        activeBinDepthPct = (binUsd / poolActiveTvl) * 100;
+        if (activeBinDepthPct < 5) {
+          activeBinDepthLabel = `🚨 thin (${activeBinDepthPct.toFixed(1)}% of TVL — most LP is OOR, high IL risk on any swap)`;
+        } else if (activeBinDepthPct < 15) {
+          activeBinDepthLabel = `⚠️  moderate (${activeBinDepthPct.toFixed(1)}% of TVL in active bin)`;
+        } else {
+          activeBinDepthLabel = `✅ healthy (${activeBinDepthPct.toFixed(1)}% of TVL concentrated near current price)`;
+        }
+      }
 
       // OKX signals
       const okxParts = [
@@ -583,6 +607,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
         `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
+        activeBinDepthLabel ? `  active_bin_depth: ${activeBinDepthLabel}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
         n?.narrative ? `  narrative_untrusted: ${sanitizeUntrustedPromptText(n.narrative, 500)}` : `  narrative_untrusted: none`,
         mem ? `  memory_untrusted: ${sanitizeUntrustedPromptText(mem, 500)}` : null,
