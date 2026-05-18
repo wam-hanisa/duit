@@ -35,6 +35,7 @@ import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
 import { checkWhaleActivity, clearWhaleSnapshot } from "./whale-watch.js";
+import { checkWhaleEntry } from "./whale-entry.js";
 
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const isMain = entrypointPath
@@ -550,6 +551,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const netBuyers = ti?.stats_1h?.net_buyers;
       const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
 
+      // ─── Whale entry detection ──────────────────────────────────
+      // Combines smart_money_buy + net buyers + smart wallet presence.
+      // If detected, surfaces as a tag in the candidate block.
+      const baseMint = pool.base?.mint || pool.base_mint || ti?.mint || null;
+      const smartWalletCount = sw?.in_pool?.length ?? 0;
+      const whaleEntry = baseMint ? checkWhaleEntry({
+        mint: baseMint,
+        tokenInfo: { ...(ti || {}), smart_money_buy: pool.smart_money_buy ?? ti?.smart_money_buy },
+        holders: null, // holder delta tracking deferred (would require extra API call per candidate)
+        smartWalletCount,
+      }) : null;
+
       // OKX signals
       const okxParts = [
         pool.risk_level     != null ? `risk=${pool.risk_level}`               : null,
@@ -582,6 +595,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         okxTags  ? `  tags: ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
         `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
+        whaleEntry ? `  ${whaleEntry.label}` : null,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
         n?.narrative ? `  narrative_untrusted: ${sanitizeUntrustedPromptText(n.narrative, 500)}` : `  narrative_untrusted: none`,
