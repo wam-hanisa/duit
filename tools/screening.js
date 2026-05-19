@@ -369,14 +369,49 @@ export async function discoverPools({
       : null,
   ].filter(Boolean).join("&&");
 
-  const data = await fetchPoolDiscoveryPage({
-    page_size,
-    filters,
-    timeframe: s.timeframe,
-    category: s.category,
-  });
+  const categories = [s.category];
+  if (s.secondaryCategory && s.secondaryCategory !== s.category) {
+    categories.push(s.secondaryCategory);
+  }
 
-  let rawPools = Array.isArray(data.data) ? data.data : [];
+  const pageResults = await Promise.allSettled(
+    categories.map((category) =>
+      fetchPoolDiscoveryPage({
+        page_size,
+        filters,
+        timeframe: s.timeframe,
+        category,
+      })
+    )
+  );
+
+  // Merge pools from all categories, dedup by pool_address (first occurrence wins
+  // so primary category keeps priority/order when same pool appears in both lists)
+  const merged = new Map();
+  let mergeStats = "";
+  for (let i = 0; i < pageResults.length; i++) {
+    const result = pageResults[i];
+    const category = categories[i];
+    if (result.status !== "fulfilled") {
+      log("screening", `Pool discovery for category=${category} failed: ${result.reason?.message || result.reason}`);
+      continue;
+    }
+    const pools = Array.isArray(result.value.data) ? result.value.data : [];
+    let added = 0;
+    for (const pool of pools) {
+      const addr = pool?.pool_address;
+      if (!addr || merged.has(addr)) continue;
+      merged.set(addr, pool);
+      added++;
+    }
+    mergeStats += `${category}:${pools.length}(+${added}) `;
+  }
+
+  if (categories.length > 1) {
+    log("screening", `Multi-category fetch: ${mergeStats.trim()} → ${merged.size} unique pools`);
+  }
+
+  let rawPools = Array.from(merged.values());
 
   if (config.screening.useDiscordSignals) {
     const signalCandidates = await fetchDiscordSignalCandidates().catch((error) => {
