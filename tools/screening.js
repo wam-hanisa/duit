@@ -369,10 +369,15 @@ export async function discoverPools({
       : null,
   ].filter(Boolean).join("&&");
 
-  const categories = [s.category];
-  if (s.secondaryCategory && s.secondaryCategory !== s.category) {
-    categories.push(s.secondaryCategory);
+  // Build category list: primary + secondary + extras (deduped)
+  // Default fallback: trending only (preserves old behavior if nothing configured)
+  const categorySet = new Set();
+  if (s.category) categorySet.add(s.category);
+  if (s.secondaryCategory) categorySet.add(s.secondaryCategory);
+  if (Array.isArray(s.extraCategories)) {
+    for (const c of s.extraCategories) if (c) categorySet.add(c);
   }
+  const categories = categorySet.size > 0 ? Array.from(categorySet) : ["trending"];
 
   const pageResults = await Promise.allSettled(
     categories.map((category) =>
@@ -531,7 +536,8 @@ export async function discoverPools({
  */
 export async function getTopCandidates({ limit = 10 } = {}) {
   const { config } = await import("../config.js");
-  const discovery = await discoverPools({ page_size: 50 });
+  const pageSize = Number(config.screening.poolPageSize ?? 100);
+  const discovery = await discoverPools({ page_size: pageSize });
   const { pools } = discovery;
   const filteredOut = Array.isArray(discovery.filtered_examples) ? [...discovery.filtered_examples] : [];
 
