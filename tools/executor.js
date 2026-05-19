@@ -636,9 +636,10 @@ export async function executeTool(name, args) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
         }
-        // Auto-add smart wallets from profitable closes (>= +1% PnL)
-        const closedPnlPct = Number(result.pnl_pct);
-        if (Number.isFinite(closedPnlPct) && closedPnlPct >= 1 && config.management.smartWalletAutoAddEnabled) {
+        // Auto-add smart wallets from EVERY close — even losses can have profitable LPers in the pool.
+        // The autoAddFromPool() function itself filters by per-LPer winRate/ROI, so unprofitable LPers
+        // never get added; only the pool-level PnL gate was previously hiding good LPers in losing pools.
+        if (config.management.smartWalletAutoAddEnabled) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) {
             import("../smart-wallet-maintenance.js").then(({ autoAddFromPool }) =>
