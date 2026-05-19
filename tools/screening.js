@@ -519,7 +519,7 @@ export async function discoverPools({
   }
 
   return {
-    total: data.total,
+    total: merged.size,
     pools,
     filtered_examples: filteredExamples,
   };
