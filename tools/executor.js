@@ -766,7 +766,53 @@ async function runSafetyChecks(name, args) {
           const lastReason = String(lastDeploy?.close_reason || "").toLowerCase();
           const minutesSinceLastClose = lastClosedAtMs ? (Date.now() - lastClosedAtMs) / 60000 : null;
 
-          // Smart re-entry after a recent negative close
+          // Whale-dump-specific cooldown (data-driven from 11 dump events:
+          // re-entries < 6h all failed, 12h+ had 67% win rate)
+          // Counts consecutive whale dumps in pool history for escalation.
+          const whaleDumpHardHours = numberOrNull(config.screening.whaleDumpCooldownHours) ?? 12;
+          const whaleDumpEscalationHours = numberOrNull(config.screening.whaleDumpEscalationHours) ?? 48;
+          const whaleDumpBlacklistCount = numberOrNull(config.screening.whaleDumpBlacklistCount) ?? 3;
+          const isLastDumpWhale = lastReason.includes("whale") || lastReason.includes("🐋");
+          if (isLastDumpWhale && lastPnl != null && lastPnl < 0 && minutesSinceLastClose != null) {
+            // Count consecutive whale dumps from history (most recent backwards)
+            let consecutiveDumps = 0;
+            const history = Array.isArray(poolMemory.history) ? poolMemory.history : [];
+            for (let i = history.length - 1; i >= 0; i--) {
+              const reason = String(history[i]?.close_reason || "").toLowerCase();
+              if (reason.includes("whale") || reason.includes("🐋")) consecutiveDumps++;
+              else break;
+            }
+
+            // Auto-blacklist on 3+ consecutive whale dumps
+            if (consecutiveDumps >= whaleDumpBlacklistCount) {
+              log("safety_block", `Pool ${args.pool_address.slice(0, 8)}… has ${consecutiveDumps} consecutive whale dumps — recommending blacklist for token ${poolMemory.base_mint || "?"}`);
+              return {
+                pass: false,
+                reason: `Pool ${args.pool_address.slice(0, 8)}… has ${consecutiveDumps} consecutive whale dumps in history. Pattern is structural — refusing deploy. Consider adding ${poolMemory.base_mint || args.base_mint || "this base mint"} to token-blacklist.json.`,
+              };
+            }
+
+            // Escalation: 2nd whale dump within 24h → 48h cooldown
+            const effectiveCooldownHours = consecutiveDumps >= 2 ? whaleDumpEscalationHours : whaleDumpHardHours;
+            // High-vol deploy penalty: vol ≥5 dumped within 30 min → +30min extra
+            const lastVolAtDeploy = numberOrNull(lastDeploy?.volatility_at_deploy);
+            const lastHeldMin = numberOrNull(lastDeploy?.minutes_held);
+            const highVolPenalty = (lastVolAtDeploy != null && lastVolAtDeploy >= 5 && lastHeldMin != null && lastHeldMin < 30) ? 0.5 : 0;
+            const effectiveCooldownMs = (effectiveCooldownHours + highVolPenalty) * 60 * 60 * 1000;
+
+            if (Date.now() - lastClosedAtMs < effectiveCooldownMs) {
+              const label = consecutiveDumps >= 2 ? `ESCALATED (${consecutiveDumps} consecutive dumps)` : "whale dump";
+              const penaltyNote = highVolPenalty > 0 ? ` (+30m high-vol penalty)` : "";
+              return {
+                pass: false,
+                reason: `Pool ${args.pool_address.slice(0, 8)}… ${label}${penaltyNote} — closed ${minutesSinceLastClose.toFixed(0)}m ago at ${lastPnl.toFixed(2)}%. Cooldown ${(effectiveCooldownHours + highVolPenalty).toFixed(1)}h required (data: <6h re-entries failed 100%, 12h+ won 67%).`,
+              };
+            }
+            // Cooldown passed — log this as recovery attempt and fall through to allow
+            log("smart_reentry", `Pool ${args.pool_address.slice(0, 8)}… whale-dump cooldown (${effectiveCooldownHours}h) expired after ${(minutesSinceLastClose/60).toFixed(1)}h. Allowing deploy attempt.`);
+          }
+
+          // Smart re-entry after a recent negative close (non-whale-dump losses)
           // Hard minimum 30m cooldown, then check if pool conditions have stabilized
           const reentryAfterLossHours = numberOrNull(config.screening.reentryAfterLossHours) ?? 6;
           const reentryMinCooldownMin = numberOrNull(config.screening.reentryMinCooldownMin) ?? 30;
@@ -813,8 +859,19 @@ async function runSafetyChecks(name, args) {
                 const volWithinLimit = maxVol == null || currentVol == null || currentVol <= maxVol;
 
                 if (isWhaleDump) {
-                  // Whale dumps are structural — keep full cooldown
-                  smartReentryReason = `whale dump loss — full ${reentryAfterLossHours}h cooldown enforced`;
+                  // Whale dumps already handled above by dedicated whale-dump cooldown.
+                  // If we got here, that cooldown already passed — apply same conditions check.
+                  if (volImproved && tvlHealthy && feesHealthy && volWithinLimit) {
+                    smartReentryAllowed = true;
+                    smartReentryReason = `post-whale-dump recovery: vol ${currentVol?.toFixed(2) ?? "?"} (was ${lastVolatility?.toFixed(2) ?? "?"}), TVL $${currentTvl?.toFixed(0) ?? "?"}, fee/TVL ${currentFeeRatio?.toFixed(2) ?? "?"}%`;
+                  } else {
+                    const reasons = [];
+                    if (!volImproved) reasons.push(`vol ${currentVol?.toFixed(2)} > ${lastVolatility?.toFixed(2)} at loss`);
+                    if (!tvlHealthy) reasons.push(`TVL $${currentTvl?.toFixed(0)} < min $${minTvl}`);
+                    if (!feesHealthy) reasons.push(`fee/TVL ${currentFeeRatio?.toFixed(2)}% < min ${minFeeRatio}%`);
+                    if (!volWithinLimit) reasons.push(`vol ${currentVol?.toFixed(2)} > max ${maxVol}`);
+                    smartReentryReason = `whale-dump cooldown passed but still unstable: ${reasons.join(", ")}`;
+                  }
                 } else if (volImproved && tvlHealthy && feesHealthy && volWithinLimit) {
                   smartReentryAllowed = true;
                   smartReentryReason = `conditions stabilized: vol ${currentVol?.toFixed(2) ?? "?"} (was ${lastVolatility?.toFixed(2) ?? "?"}), TVL $${currentTvl?.toFixed(0) ?? "?"}, fee/TVL ${currentFeeRatio?.toFixed(2) ?? "?"}%`;

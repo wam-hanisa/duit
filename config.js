@@ -66,9 +66,13 @@ export const config = {
     maxFeeActiveTvlRatio: u.maxFeeActiveTvlRatio ?? null, // null = no cap; set to e.g. 2.0 to block extreme pump pools
     maxVolatility: u.maxVolatility ?? null, // null = no cap; pools with volatility above this are rejected (e.g. 5)
     maxSingleHolderPct: u.maxSingleHolderPct ?? null, // null = no cap; reject if any single non-pool holder owns more than this %
-    reentryAfterLossHours: u.reentryAfterLossHours ?? 6, // max cooldown hours (full block for whale dumps; smart-check window for others)
+    reentryAfterLossHours: u.reentryAfterLossHours ?? 6, // normal-loss cooldown hours (smart-check window applies after reentryMinCooldownMin)
     reentryMinCooldownMin: u.reentryMinCooldownMin ?? 30, // hard minimum minutes before smart re-entry check kicks in
     reentryAfterPumpMinutes: u.reentryAfterPumpMinutes ?? 60, // block same pool re-entry for X minutes after a "pumped above" close
+    // Whale-dump-specific cooldowns (data-driven: <6h re-entries failed 100%, 12h+ won 67%)
+    whaleDumpCooldownHours: u.whaleDumpCooldownHours ?? 12, // base cooldown for any whale-dump close
+    whaleDumpEscalationHours: u.whaleDumpEscalationHours ?? 48, // applied when 2+ consecutive whale dumps in same pool
+    whaleDumpBlacklistCount: u.whaleDumpBlacklistCount ?? 3, // refuse deploy entirely after this many consecutive whale dumps
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl !== undefined ? u.maxTvl : 150_000,
     minVolume:         u.minVolume         ?? 500,
@@ -306,6 +310,9 @@ export function reloadScreeningThresholds() {
     if (fresh.reentryAfterLossHours  != null) s.reentryAfterLossHours  = fresh.reentryAfterLossHours;
     if (fresh.reentryMinCooldownMin  != null) s.reentryMinCooldownMin  = fresh.reentryMinCooldownMin;
     if (fresh.reentryAfterPumpMinutes != null) s.reentryAfterPumpMinutes = fresh.reentryAfterPumpMinutes;
+    if (fresh.whaleDumpCooldownHours  != null) s.whaleDumpCooldownHours  = fresh.whaleDumpCooldownHours;
+    if (fresh.whaleDumpEscalationHours != null) s.whaleDumpEscalationHours = fresh.whaleDumpEscalationHours;
+    if (fresh.whaleDumpBlacklistCount != null) s.whaleDumpBlacklistCount = fresh.whaleDumpBlacklistCount;
     const minBinsBelow = numericConfig(fresh.minBinsBelow) ?? config.strategy.minBinsBelow;
     const maxBinsBelow = numericConfig(fresh.maxBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.maxBinsBelow;
     const defaultBinsBelow = numericConfig(fresh.defaultBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.defaultBinsBelow ?? maxBinsBelow;
