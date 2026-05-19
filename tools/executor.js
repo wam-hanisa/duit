@@ -766,18 +766,82 @@ async function runSafetyChecks(name, args) {
           const lastReason = String(lastDeploy?.close_reason || "").toLowerCase();
           const minutesSinceLastClose = lastClosedAtMs ? (Date.now() - lastClosedAtMs) / 60000 : null;
 
-          // Block re-entry after a recent negative close
+          // Smart re-entry after a recent negative close
+          // Hard minimum 30m cooldown, then check if pool conditions have stabilized
           const reentryAfterLossHours = numberOrNull(config.screening.reentryAfterLossHours) ?? 6;
+          const reentryMinCooldownMin = numberOrNull(config.screening.reentryMinCooldownMin) ?? 30;
           if (
             lastPnl != null &&
             lastPnl < 0 &&
             minutesSinceLastClose != null &&
             minutesSinceLastClose < reentryAfterLossHours * 60
           ) {
-            return {
-              pass: false,
-              reason: `Pool ${args.pool_address.slice(0, 8)}… closed at ${lastPnl.toFixed(2)}% ${minutesSinceLastClose.toFixed(0)}m ago. Cooldown ${reentryAfterLossHours}h after a loss — refusing re-entry.`,
-            };
+            // Always enforce hard minimum cooldown (no instant retries)
+            if (minutesSinceLastClose < reentryMinCooldownMin) {
+              return {
+                pass: false,
+                reason: `Pool ${args.pool_address.slice(0, 8)}… closed at ${lastPnl.toFixed(2)}% ${minutesSinceLastClose.toFixed(0)}m ago. Hard cooldown ${reentryMinCooldownMin}m — too soon to re-enter.`,
+              };
+            }
+
+            // After minimum cooldown: fetch fresh pool data and compare conditions
+            const lastVolatility = numberOrNull(lastDeploy?.volatility_at_deploy);
+            const lastCloseReason = lastReason;
+            let smartReentryAllowed = false;
+            let smartReentryReason = "";
+            try {
+              const freshPool = await fetchFreshPoolDetail(args.pool_address);
+              if (freshPool) {
+                const currentVol = poolDetailVolatility(freshPool);
+                const currentTvl = poolDetailTvl(freshPool);
+                const currentFeeRatio = poolDetailFeeActiveTvlRatio(freshPool);
+                const minTvl = numberOrNull(config.screening.minTvl) ?? 0;
+                const minFeeRatio = numberOrNull(config.screening.minFeeActiveTvlRatio) ?? 0;
+                const maxVol = numberOrNull(config.screening.maxVolatility);
+
+                // Conditions to allow smart re-entry:
+                // 1. Current volatility is lower than when we lost (pool calmed down)
+                //    OR volatility at deploy was unknown (can't compare)
+                // 2. TVL is still above minimum (pool didn't collapse)
+                // 3. Fee/TVL ratio still healthy (pool is still active)
+                // 4. Current volatility within maxVolatility (not spiking)
+                // 5. NOT a whale-dump loss (whale dumps are structural — hard cooldown)
+                const isWhaleDump = lastCloseReason.includes("whale") || lastCloseReason.includes("🐋");
+                const volImproved = lastVolatility == null || currentVol == null || currentVol <= lastVolatility;
+                const tvlHealthy = currentTvl != null && currentTvl >= minTvl;
+                const feesHealthy = currentFeeRatio != null && currentFeeRatio >= minFeeRatio;
+                const volWithinLimit = maxVol == null || currentVol == null || currentVol <= maxVol;
+
+                if (isWhaleDump) {
+                  // Whale dumps are structural — keep full cooldown
+                  smartReentryReason = `whale dump loss — full ${reentryAfterLossHours}h cooldown enforced`;
+                } else if (volImproved && tvlHealthy && feesHealthy && volWithinLimit) {
+                  smartReentryAllowed = true;
+                  smartReentryReason = `conditions stabilized: vol ${currentVol?.toFixed(2) ?? "?"} (was ${lastVolatility?.toFixed(2) ?? "?"}), TVL $${currentTvl?.toFixed(0) ?? "?"}, fee/TVL ${currentFeeRatio?.toFixed(2) ?? "?"}%`;
+                } else {
+                  const reasons = [];
+                  if (!volImproved) reasons.push(`vol ${currentVol?.toFixed(2)} > ${lastVolatility?.toFixed(2)} at loss`);
+                  if (!tvlHealthy) reasons.push(`TVL $${currentTvl?.toFixed(0)} < min $${minTvl}`);
+                  if (!feesHealthy) reasons.push(`fee/TVL ${currentFeeRatio?.toFixed(2)}% < min ${minFeeRatio}%`);
+                  if (!volWithinLimit) reasons.push(`vol ${currentVol?.toFixed(2)} > max ${maxVol}`);
+                  smartReentryReason = `still unstable: ${reasons.join(", ")}`;
+                }
+              } else {
+                smartReentryReason = "pool not found in Meteora API — cannot verify conditions";
+              }
+            } catch (e) {
+              smartReentryReason = `condition check failed: ${e.message}`;
+            }
+
+            if (smartReentryAllowed) {
+              log("smart_reentry", `✅ Pool ${args.pool_address.slice(0, 8)}… re-entry allowed after ${minutesSinceLastClose.toFixed(0)}m (lost ${lastPnl.toFixed(2)}%). ${smartReentryReason}`);
+              // Allow — don't return, fall through to continue deploy
+            } else {
+              return {
+                pass: false,
+                reason: `Pool ${args.pool_address.slice(0, 8)}… closed at ${lastPnl.toFixed(2)}% ${minutesSinceLastClose.toFixed(0)}m ago. ${smartReentryReason}`,
+              };
+            }
           }
 
           // Block immediate revenge re-entry after a "pumped above range" exit (mean-reversion risk)
