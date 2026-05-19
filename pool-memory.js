@@ -171,12 +171,14 @@ export function recordPoolDeploy(poolAddress, deployData) {
   const oorTriggerCount = config.management.oorCooldownTriggerCount ?? 3;
   const oorCooldownHours = config.management.oorCooldownHours ?? 12;
   const recentDeploys = entry.deploys.slice(-oorTriggerCount);
+  // Only count LOSING OOR closes — profitable trailing-TP-via-OOR closes are wins,
+  // not a "stuck repeat" pattern. Closing 3 winners shouldn't trigger a 24h cooldown.
   const repeatedOorCloses =
     recentDeploys.length >= oorTriggerCount &&
-    recentDeploys.every((d) => isOorCloseReason(d.close_reason));
+    recentDeploys.every((d) => isOorCloseReason(d.close_reason) && Number(d.pnl_pct) < 0);
 
   if (repeatedOorCloses) {
-    const reason = `repeated OOR closes (${oorTriggerCount}x)`;
+    const reason = `repeated losing OOR closes (${oorTriggerCount}x)`;
     const poolCooldownUntil = setPoolCooldown(entry, oorCooldownHours, reason);
     const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, oorCooldownHours, reason);
     log("pool-memory", `Cooldown set for ${entry.name} until ${poolCooldownUntil} (${reason})`);
@@ -221,6 +223,64 @@ export function isPoolOnCooldown(poolAddress) {
   const entry = db[poolAddress];
   if (!entry?.cooldown_until) return false;
   return new Date(entry.cooldown_until) > new Date();
+}
+
+/**
+ * Find the most recent whale-dump close for any pool of a given base_mint.
+ * Scans across ALL pool-memory entries to catch the case where a token has
+ * multiple pool addresses (different fee tiers / new launches of the same token).
+ * Returns the deploy + parent entry, or null if none found.
+ */
+export function findRecentWhaleDumpByBaseMint(baseMint) {
+  if (!baseMint) return null;
+  const db = load();
+  let mostRecent = null;
+  for (const [poolAddress, entry] of Object.entries(db)) {
+    if (entry?.base_mint !== baseMint) continue;
+    if (!Array.isArray(entry.deploys)) continue;
+    for (const deploy of entry.deploys) {
+      const reason = String(deploy?.close_reason || "").toLowerCase();
+      if (!reason.includes("whale") && !reason.includes("🐋")) continue;
+      const closedAtMs = deploy?.closed_at ? Date.parse(deploy.closed_at) : null;
+      if (!closedAtMs) continue;
+      if (!mostRecent || closedAtMs > mostRecent.closedAtMs) {
+        mostRecent = {
+          closedAtMs,
+          deploy,
+          poolAddress,
+          poolName: entry.name,
+        };
+      }
+    }
+  }
+  return mostRecent;
+}
+
+/**
+ * Count consecutive whale-dump closes across ALL pools of a given base_mint,
+ * sorted by closed_at. Walks back from the most recent until a non-whale-dump
+ * close is found.
+ */
+export function countConsecutiveWhaleDumpsByBaseMint(baseMint) {
+  if (!baseMint) return 0;
+  const db = load();
+  const allCloses = [];
+  for (const entry of Object.values(db)) {
+    if (entry?.base_mint !== baseMint) continue;
+    if (!Array.isArray(entry.deploys)) continue;
+    for (const deploy of entry.deploys) {
+      const closedAtMs = deploy?.closed_at ? Date.parse(deploy.closed_at) : null;
+      if (!closedAtMs) continue;
+      allCloses.push({ closedAtMs, reason: String(deploy?.close_reason || "").toLowerCase() });
+    }
+  }
+  allCloses.sort((a, b) => b.closedAtMs - a.closedAtMs); // newest first
+  let count = 0;
+  for (const c of allCloses) {
+    if (c.reason.includes("whale") || c.reason.includes("🐋")) count++;
+    else break;
+  }
+  return count;
 }
 
 export function isBaseMintOnCooldown(baseMint) {

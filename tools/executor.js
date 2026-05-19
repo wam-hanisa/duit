@@ -14,7 +14,7 @@ import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
 
-import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+import { getPoolMemory, addPoolNote, findRecentWhaleDumpByBaseMint, countConsecutiveWhaleDumpsByBaseMint } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
@@ -756,6 +756,38 @@ async function runSafetyChecks(name, args) {
       //   2. Re-entry into a pool that recently produced a negative close
       //   3. Pools where a single non-pool holder concentration > maxSingleHolderPct (whale risk)
       try {
+        // BASE-MINT-LEVEL whale-dump check (token-wide, across ALL pool addresses)
+        // Catches the case where a token has multiple pools — e.g. Embrace had
+        // pool 9eSpnMgE (whale dumped twice on May 18) then a second pool
+        // 38LYmGaH that whale-dumped on May 19. Token-level cooldown stops this.
+        if (args.base_mint && args.pool_address) {
+          const tokenDump = findRecentWhaleDumpByBaseMint(args.base_mint);
+          if (tokenDump && tokenDump.poolAddress !== args.pool_address) {
+            const minutesSinceTokenDump = (Date.now() - tokenDump.closedAtMs) / 60000;
+            const whaleDumpHardHours = numberOrNull(config.screening.whaleDumpCooldownHours) ?? 12;
+            const whaleDumpEscalationHours = numberOrNull(config.screening.whaleDumpEscalationHours) ?? 48;
+            const whaleDumpBlacklistCount = numberOrNull(config.screening.whaleDumpBlacklistCount) ?? 3;
+            const consecutiveDumps = countConsecutiveWhaleDumpsByBaseMint(args.base_mint);
+
+            // Auto-block if token has 3+ consecutive whale dumps across any pool
+            if (consecutiveDumps >= whaleDumpBlacklistCount) {
+              return {
+                pass: false,
+                reason: `Token ${args.base_mint.slice(0, 8)}… has ${consecutiveDumps} consecutive whale dumps across all its pools. Pattern is structural — refusing deploy. Consider blacklisting this base mint.`,
+              };
+            }
+
+            const effectiveCooldownHours = consecutiveDumps >= 2 ? whaleDumpEscalationHours : whaleDumpHardHours;
+            if (minutesSinceTokenDump < effectiveCooldownHours * 60) {
+              const label = consecutiveDumps >= 2 ? `ESCALATED (${consecutiveDumps} consecutive token-level dumps)` : "token-level whale dump";
+              return {
+                pass: false,
+                reason: `Token ${args.base_mint.slice(0, 8)}… ${label} — another pool ${tokenDump.poolAddress.slice(0, 8)}… (${tokenDump.poolName}) closed ${minutesSinceTokenDump.toFixed(0)}m ago at ${Number(tokenDump.deploy.pnl_pct).toFixed(2)}%. Cooldown ${effectiveCooldownHours}h required across all pools of this token.`,
+              };
+            }
+          }
+        }
+
         const poolMemory = args.pool_address ? getPoolMemory({ pool_address: args.pool_address }) : null;
         if (poolMemory && poolMemory.known) {
           const lastDeploy = Array.isArray(poolMemory.history) && poolMemory.history.length
