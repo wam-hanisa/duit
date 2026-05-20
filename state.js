@@ -414,6 +414,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     log("state", `Position ${position_address} marked out of range`);
   } else if (in_range === true && pos.out_of_range_since) {
     pos.out_of_range_since = null;
+    pos.oor_hold_logged = false; // reset min-profit-gate log flag for next OOR episode
     changed = true;
     log("state", `Position ${position_address} back in range`);
   }
@@ -447,10 +448,31 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   if (pos.out_of_range_since) {
     const minutesOOR = Math.floor((Date.now() - new Date(pos.out_of_range_since).getTime()) / 60000);
     if (minutesOOR >= mgmtConfig.outOfRangeWaitMinutes) {
-      return {
-        action: "OUT_OF_RANGE",
-        reason: `Out of range for ${minutesOOR}m (limit: ${mgmtConfig.outOfRangeWaitMinutes}m)`,
-      };
+      // Min-profit gate: don't scratch-close a barely-profitable OOR position when
+      // the gain is below the fee cost floor. Hold for recovery into range / a bigger
+      // move, UNLESS it's been OOR longer than maxOorHoldMinutes (frees the slot).
+      const minProfitGate = mgmtConfig.minProfitToCloseOorPct ?? 0;
+      const maxOorHold = mgmtConfig.maxOorHoldMinutes ?? (mgmtConfig.outOfRangeWaitMinutes * 3);
+      const inDeadZone =
+        minProfitGate > 0 &&
+        currentPnlPct != null &&
+        currentPnlPct >= 0 &&
+        currentPnlPct < minProfitGate;
+
+      if (inDeadZone && minutesOOR < maxOorHold) {
+        // Hold — log once per OOR episode to avoid 30s-poller spam
+        if (!pos.oor_hold_logged) {
+          pos.oor_hold_logged = true;
+          save(state);
+          log("state", `Position ${position_address} OOR ${minutesOOR}m at +${currentPnlPct.toFixed(2)}% — below ${minProfitGate}% min-profit gate (fee floor), holding up to ${maxOorHold}m`);
+        }
+      } else {
+        const gateNote = inDeadZone ? ` (held ${minutesOOR}m >= max ${maxOorHold}m, freeing slot)` : "";
+        return {
+          action: "OUT_OF_RANGE",
+          reason: `Out of range for ${minutesOOR}m (limit: ${mgmtConfig.outOfRangeWaitMinutes}m)${gateNote}`,
+        };
+      }
     }
   }
 

@@ -989,7 +989,19 @@ function getDeterministicCloseRule(position, managementConfig) {
     position.active_bin > position.upper_bin &&
     (position.minutes_out_of_range ?? 0) >= managementConfig.outOfRangeWaitMinutes
   ) {
-    return { action: "CLOSE", rule: 4, reason: "OOR" };
+    // Min-profit gate (mirrors state.js): skip the OOR close while a barely-profitable
+    // position is in the fee dead-zone, unless OOR longer than maxOorHoldMinutes.
+    const minProfitGate = managementConfig.minProfitToCloseOorPct ?? 0;
+    const maxOorHold = managementConfig.maxOorHoldMinutes ?? (managementConfig.outOfRangeWaitMinutes * 3);
+    const oorMinutes = position.minutes_out_of_range ?? 0;
+    const inDeadZone =
+      minProfitGate > 0 &&
+      position.pnl_pct != null &&
+      position.pnl_pct >= 0 &&
+      position.pnl_pct < minProfitGate;
+    if (!(inDeadZone && oorMinutes < maxOorHold)) {
+      return { action: "CLOSE", rule: 4, reason: "OOR" };
+    }
   }
   if (
     position.fee_per_tvl_24h != null &&

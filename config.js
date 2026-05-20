@@ -109,6 +109,8 @@ export const config = {
     autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? false,
     outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
+    minProfitToCloseOorPct: u.minProfitToCloseOorPct ?? 0, // don't OOR-close a profitable position below this % (fees > profit); 0 = disabled
+    maxOorHoldMinutes:     u.maxOorHoldMinutes     ?? 45, // hard cap: OOR-close regardless of the min-profit gate after this long (frees the position slot)
     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
     repeatDeployCooldownEnabled: u.repeatDeployCooldownEnabled ?? true,
