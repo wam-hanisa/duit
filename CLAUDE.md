@@ -100,6 +100,16 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | `whaleDumpEscalationHours` | 48 | Cooldown when 2+ consecutive whale dumps |
 | `whaleDumpBlacklistCount` | 3 | Refuse deploy entirely after this many consecutive dumps |
 
+### Repeat-Deploy Cooldown Config Keys (this one benches *winners*)
+
+| Key | Default (code) | Purpose |
+|-----|---------|---------|
+| `repeatDeployCooldownEnabled` | `true` → **set `false` (May 20)** | Benches a token after N consecutive *fee-generating (winning)* deploys. **Disabled** — it was benching proven winners and starving the candidate pool (45 winner-cooldowns accumulated vs 29 loss-cooldowns; see Performance Analysis). A winner should stay a candidate as long as its current indicators pass the normal filters. |
+| `repeatDeployCooldownTriggerCount` | 3 | Consecutive winning deploys before the bench triggers |
+| `repeatDeployCooldownHours` | 12 | Bench duration |
+| `repeatDeployCooldownScope` | `token` | `pool` \| `token` \| `both` — `token` benches every pool of the mint |
+| `repeatDeployCooldownMinFeeEarnedPct` | 0 | Min fee % for a deploy to count as "fee-generating" (0 = any fee at all counts) |
+
 ### Management Config Keys
 
 | Key | Default | Purpose |
@@ -462,6 +472,20 @@ const actualBaseFee = baseFactor > 0
 | **May 11** | SL -7, OOR 8→12m, mgmt 5m | 21 | 40% | **-$17.30** | 2 SL blowouts dominated |
 | **May 18** | SL -10, OOR 18m, no cooldown system | 17 | 47% | **-$22.06** | 4 whale dumps = -$32 |
 | **May 19** | NEW: smart re-entry + whale cooldowns + loose filters | 8 | **87.5%** | **+$5.42** | 1 dump only, 6 winning re-entries |
+| **May 20** | repeatDeployCooldown had benched all 3 best tokens → starvation | 0 | — | **$0** | No deploys for hours (only vol-14 PHOENIX left). Fix: cleared 45 winner-cooldowns + `repeatDeployCooldownEnabled: false` |
+
+### Volatility Band Analysis (from lessons.json, 54 trades)
+
+Win rate stays high across all volatility, but **average PnL flips negative above ~3.0** — losses scale with volatility while wins don't:
+
+| Volatility band | Trades | Win% | Avg PnL | Total PnL |
+|---|---|---|---|---|
+| **< 3.0** | 23 | 87% | **+1.22%** | **+28.1** |
+| **>= 3.0** | 31 | 61% | **-2.30%** | **-58.0** |
+| 2.5-3.0 (sweet spot) | 9 | 100% | +2.24% | +20.2 |
+| 5.0+ (toxic) | 7 | 43% | -5.66% | -39.6 |
+
+Winners' avg volatility = 3.28; losers' = 4.05. **`maxVolatility` 5 → 3.5 (or 3.0) is the highest-EV screening change.** Caveat: low-vol pools (1-2) still won ~88% with real fees — low volatility is NOT the enemy, high volatility (>=3.5) is. Config still at `maxVolatility: 5` pending user decision.
 
 ### Key Insights from May 18 → May 19 Improvement
 
@@ -639,7 +663,8 @@ From real pool-memory data:
 Agent runs on **AWS Lightsail** (Ubuntu). The `user-config.json` is gitignored — manually synced via FileZilla.
 
 Workflow:
-1. **Config-only change**: Edit `user-config.json` → upload via FileZilla → hot-reloads automatically (no restart)
+1. **Config-only change**: Edit `user-config.json` → upload via FileZilla → **`pm2 restart duit`** (required to apply).
+   ⚠️ **There is NO file watcher** — editing/uploading the file does NOT auto-apply. The only live-reload path, `reloadScreeningThresholds()`, is triggered solely by the `update_config` tool (Telegram) and `/evolve` / auto-evolution, and it refreshes **`screening.*` keys only**. `management.*` keys (stopLoss, takeProfit, trailing\*, breakEven\*, whaleWatch\*, repeatDeployCooldown\*) and `schedule.*` apply live only via the `update_config` tool — otherwise they need a restart.
 2. **Code change** (`.js` files): Push to GitHub → `git pull` on server → `pm2 restart duit`
 
 ---
@@ -657,6 +682,8 @@ A yield-triggered fast management variant lives in `C:\Data\Duit\duit-cepat\`. K
 ## Recent Fixes (May 19-20, 2026)
 
 ### ✅ Fixed
+- **Winner-benching cooldown disabled (May 20)**: `repeatDeployCooldownEnabled: false`. The `repeatDeployCooldown` ("repeat fee-generating deploys") benched *profitable* tokens for 12h after 3 wins — 45 such winner-cooldowns had accumulated vs 29 loss-cooldowns, starving the candidate pool (May 20: 0 deploys; DEGEN/Coinini/TOLYBOT all filtered, only vol-14 PHOENIX left). Cleared all 45 winner-cooldowns from `pool-memory.json` (loss cooldowns preserved) and disabled the rule. Winners are now re-judged by current indicators each cycle — the normal screening filters (fee/TVL, volatility, organic, bot%) already gate re-entry.
+- **CLAUDE.md hot-reload claim corrected (May 20)**: docs said file edits "hot-reload automatically (no restart)" — but there is no file watcher. File edits require `pm2 restart duit`; only the `update_config` tool / `/evolve` apply live, and `reloadScreeningThresholds()` refreshes `screening.*` keys only.
 - **Base-mint whale-dump cooldown**: Was only checking by `pool_address`. Embrace's 2nd pool (different address, same mint) slipped through. Now `findRecentWhaleDumpByBaseMint` scans all pools by mint.
 - **OOR cooldown counting wins**: 3 profitable trailing-TP-via-OOR closes triggered a 24h cooldown on a winning pool (TOLYBOT). Now only `pnl_pct < 0` OOR closes count toward the trigger.
 - **Smart re-entry replaces blanket cooldown**: Instead of "loss → 6h block", checks if pool actually stabilized (vol/TVL/fees vs loss snapshot). Allows good re-entries (TOLYBOT/DEGEN streaks).
@@ -664,6 +691,8 @@ A yield-triggered fast management variant lives in `C:\Data\Duit\duit-cepat\`. K
 - **Multi-category screening**: Added `extraCategories: ["new", "top"]` with dedup. (Reality: adds 0-3 pools, but no harm.)
 
 ### Known Issues / Tech Debt
+- **No config-file watcher**: `reloadScreeningThresholds()` only reloads `screening.*` keys, and only fires from the `update_config` tool / `/evolve`. A direct `user-config.json` file edit (FileZilla) needs a `pm2 restart` to apply, and `management.*` / `schedule.*` keys never reload from file at all. Add an `fs.watch` watcher + management-reload if true live config-file updates are wanted.
+- CLAUDE.md per-table "Default" columns mostly show the *deployed user-config value*, not the `config.js` code default — they can differ (e.g. `maxPositions` doc=1 but code default=3; `maxBotHoldersPct` doc=55 but code default=30). Treat the "Current Config Rationale" block as the source of truth for live values.
 - `lessons.js evolveThresholds()` references `maxVolatility` + `minFeeTvlRatio` (wrong key names — should be `minFeeActiveTvlRatio`; `maxVolatility` evolution is now meaningful since config has the key, but evolveThresholds wasn't updated). Evolution of these keys is a no-op.
 - `get_wallet_positions` tool (dlmm.js) is in definitions.js but not in MANAGER_TOOLS or SCREENER_TOOLS — only available in GENERAL role.
 - LLM bypasses rugpull/wash-trading flags when OKX data unavailable — needs prompt.js hardening.
