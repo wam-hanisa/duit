@@ -80,7 +80,7 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | `minMcap` / `maxMcap` | 50k / 80M | Market cap range |
 | `minBinStep` / `maxBinStep` | 80 / 250 | DLMM bin step range |
 | `minFeeActiveTvlRatio` / `maxFeeActiveTvlRatio` | 0.10 / 3.0 | Fee/active-TVL bounds |
-| `minTokenAgeHours` / `maxTokenAgeHours` | 2 / 168 | Token age window (max = 1 week) |
+| `minTokenAgeHours` / `maxTokenAgeHours` | 2 / `null` | Min 2h (avoid fresh-launch rugs); max removed May 22 — aged-but-trending tokens are survivors (99% of memes die in 3-7 days), and toxicity is token-specific tail risk, not age-driven. Other rules (volume/TVL/fee-ratio/organic) gate quality regardless of age. |
 | `minTokenFeesSol` | 30 | Min global priority+jito fees paid |
 | `maxBundlePct` | 7 | Max coordinated wallet concentration |
 | `maxBotHoldersPct` | 55 | Max % of bot-classified holders (Jupiter audit) |
