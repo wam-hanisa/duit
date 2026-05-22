@@ -113,7 +113,7 @@ HARD RULE (no exceptions, NOT overridable by smart wallets or narrative):
 - fees_sol < ${config.screening.minTokenFeesSol} → SKIP. Low fees = bundled/scam.
 - bots > ${config.screening.maxBotHoldersPct}% → already hard-filtered before you see the candidate list.
 - volatility > ${config.screening.maxVolatility ?? "(no cap)"} → SKIP. High-vol pools (Wish/Yae/BABYTROLL pattern) produce catastrophic losses.
-- pool_memory shows last_outcome.pnl_pct < 0 within last ${config.screening.reentryAfterLossHours ?? 6}h → SKIP. Recent loss = same conditions still bad. The deploy_position safety check will reject this anyway.
+- pool_memory last close was a WHALE DUMP (close_reason has "whale"/🐋) → SKIP (12h–48h cooldown enforced by the safety check). A negative last_outcome that closed < ${config.screening.reentryMinCooldownMin ?? 30}m ago → SKIP (hard re-entry floor). A NORMAL loss older than that floor is NOT an automatic skip — see POOL MEMORY below; let the smart re-entry safety check decide.
 - pool_memory shows last close_reason contains "pumped" within last ${config.screening.reentryAfterPumpMinutes ?? 60}m → SKIP. Token just spiked out of range; entering now buys the dump.
 - Any single non-pool holder owns > ${config.screening.maxSingleHolderPct ?? "(no cap)"}% of supply → SKIP. Single-whale dump risk.
 
@@ -130,7 +130,7 @@ NARRATIVE QUALITY (your main judgment call):
 - BAD: generic hype ("next 100x", "community token") with no identifiable subject
 - Smart wallets present → can override weak narrative, and are the only valid override for an OKX rugpull flag
 
-POOL MEMORY: Past losses or problems → strong skip signal. ALWAYS call get_pool_memory before deploy. If last_outcome.pnl_pct < 0 OR last close_reason mentions "pumped" or "whale" or "stop loss", the deploy will be rejected by safety checks — do not waste a tool call, skip immediately.
+POOL MEMORY: ALWAYS call get_pool_memory before deploy. Skip immediately (the safety check WILL reject) when the last close was: a whale dump (12h–48h cooldown), "pumped" within ${config.screening.reentryAfterPumpMinutes ?? 60}m, low yield (pool cooldown), or 3+ repeated out-of-range losses (24h cooldown). BUT a NORMAL loss (small stop loss, trailing-TP giveback) is re-enterable once past the ${config.screening.reentryMinCooldownMin ?? 30}m floor: the deploy_position smart re-entry check re-fetches live data and ALLOWS the deploy if the pool stabilized (current volatility ≤ the level when you lost, TVL and fee/TVL still healthy), or blocks it with a specific reason if not. Do not blanket-skip a strong, recurring pool over a single normal loss — let the safety check be the gatekeeper.
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT pick your own number — use the EXACT Deploy amount shown in the SCREENING CYCLE header. Deploying more than that WILL FAIL.
