@@ -94,6 +94,21 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
+  // Quote token MUST be wrapped SOL. This agent only does single-sided SOL
+  // deploys; a non-SOL quote (ZEC, USDC…) causes an on-chain "insufficient
+  // funds" (custom program error 0x1) because the wallet holds no quote token.
+  // Safety net behind the screening-level filter (HYPE-ZEC, WOJAK-USDC slipped
+  // past the LLM on May 22 and failed at simulation).
+  const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
+  const quoteMint = detail?.token_y?.address;
+  if (quoteMint && quoteMint !== WRAPPED_SOL_MINT) {
+    const quoteSym = detail?.token_y?.symbol || `${quoteMint.slice(0, 4)}…`;
+    return {
+      pass: false,
+      reason: `Pool quote token is ${quoteSym}, not SOL. This agent only does single-sided SOL deploys — a non-SOL quote would fail on-chain with "insufficient funds" (the wallet holds no ${quoteSym}). Refusing deploy.`,
+    };
+  }
+
   const tvl = poolDetailTvl(detail);
   const minTvl = numberOrNull(config.screening.minTvl);
   const maxTvl = numberOrNull(config.screening.maxTvl);

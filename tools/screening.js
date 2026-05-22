@@ -9,6 +9,11 @@ import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
+// This agent only does single-sided SOL deploys, so the pool's quote token
+// (token_y) MUST be wrapped SOL. Non-SOL quotes (ZEC, USDC, USDT…) cause an
+// on-chain "insufficient funds" (custom program error 0x1) because the wallet
+// has none of that quote token to deposit.
+const WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112";
 const MIN_VOLATILITY_TIMEFRAME = "30m";
 const TIMEFRAME_MINUTES = {
   "5m": 5,
@@ -101,6 +106,9 @@ function getRawPoolScreeningRejectReason(pool, s) {
   if (pool?.quote_token_has_critical_warnings === true) return "quote token has critical warnings";
   if (pool?.base_token_has_high_single_ownership === true) return "base token has high single ownership";
   if (pool?.pool_type && pool.pool_type !== "dlmm") return `pool_type ${pool.pool_type} is not dlmm`;
+  if (quote?.address && quote.address !== WRAPPED_SOL_MINT) {
+    return `quote token ${quote?.symbol || quote.address.slice(0, 4) + "…"} is not SOL — agent only supports single-sided SOL deploys`;
+  }
 
   if (mcap == null || mcap < s.minMcap) return `mcap ${mcap ?? "unknown"} below minMcap ${s.minMcap}`;
   if (mcap > s.maxMcap) return `mcap ${mcap} above maxMcap ${s.maxMcap}`;
