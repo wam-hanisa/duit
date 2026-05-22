@@ -831,11 +831,15 @@ Summarize the current portfolio health, total fees earned, and performance of al
             }
             continue;
           }
+          // Urgent PnL exits (hard stop-loss / hard take-profit) bypass the
+          // poll cooldown — they must act on the spike immediately, not wait
+          // up to managementIntervalMin (7m). _managementBusy still prevents overlap.
+          const isUrgentExit = exit.action === "STOP_LOSS" || exit.action === "TAKE_PROFIT";
           const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
           const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-          if (sinceLastTrigger >= cooldownMs) {
+          if (isUrgentExit || sinceLastTrigger >= cooldownMs) {
             _pollTriggeredAt = Date.now();
-            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management`);
+            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason}${isUrgentExit ? " (urgent — bypassing cooldown)" : ""} — triggering management`);
             runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
           } else {
             log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
@@ -861,17 +865,14 @@ Summarize the current portfolio health, total fees earned, and performance of al
             const trackedPos = getTrackedPosition(p.position);
             const whaleVerdict = await checkWhaleActivity(p, trackedPos, config.management);
             if (whaleVerdict?.detected) {
-              const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
-              const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-              if (sinceLastTrigger >= cooldownMs) {
-                _pollTriggeredAt = Date.now();
-                log("state", `[PnL poll] 🐋 Whale dump detected: ${p.pair} — ${whaleVerdict.reason} — triggering management`);
-                // Set position note so the management LLM knows why it's closing
-                setPositionInstruction(p.position, `🐋 WHALE DUMP — close immediately. ${whaleVerdict.reason}`);
-                runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
-              } else {
-                log("state", `[PnL poll] 🐋 Whale dump detected: ${p.pair} — ${whaleVerdict.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
-              }
+              // Whale dumps are always urgent — bypass the poll cooldown.
+              // A coordinated dump unwinds in seconds; waiting up to 7m guarantees
+              // a worse fill. _managementBusy still prevents overlapping cycles.
+              _pollTriggeredAt = Date.now();
+              log("state", `[PnL poll] 🐋 Whale dump detected: ${p.pair} — ${whaleVerdict.reason} — triggering management (urgent — bypassing cooldown)`);
+              // Set position note so the management LLM knows why it's closing
+              setPositionInstruction(p.position, `🐋 WHALE DUMP — close immediately. ${whaleVerdict.reason}`);
+              runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
               break;
             }
           } catch (e) {

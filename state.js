@@ -429,6 +429,17 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     };
   }
 
+  // ── Hard take profit (immediate, runs in 30s poller) ────────────
+  // Captures a fast spike to takeProfitPct NOW — don't wait for the 7-min
+  // cron or a 1.2% trailing pullback. (TOESCOIN May 20: peaked 9.99% then
+  // rugged to -1.53% before the cron's hard-TP could fire — this closes the gap.)
+  if (!pnl_pct_suspicious && currentPnlPct != null && mgmtConfig.takeProfitPct != null && currentPnlPct >= mgmtConfig.takeProfitPct) {
+    return {
+      action: "TAKE_PROFIT",
+      reason: `Take profit: PnL ${currentPnlPct.toFixed(2)}% >= ${mgmtConfig.takeProfitPct}%`,
+    };
+  }
+
   // ── Trailing TP ────────────────────────────────────────────────
   if (!pnl_pct_suspicious && pos.trailing_active) {
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
