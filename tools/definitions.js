@@ -150,7 +150,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
         properties: {
           pool_address: {
             type: "string",
-            description: "The DLMM pool address to LP in"
+            description: "The DLMM pool address to LP in. Pass ONLY the raw base58 address (e.g. '6eR5rRdex...'). Do NOT include the token symbol or parentheses — NOT 'HENRY-SOL (6eR5...)'."
           },
           amount_y: {
             type: "number",

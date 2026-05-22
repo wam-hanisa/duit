@@ -586,6 +586,29 @@ export async function executeTool(name, args) {
   // Strip model artifacts like "<|channel|>commentary" appended to tool names
   name = name.replace(/<.*$/, "").trim();
 
+  // Normalize Solana address args. Small models (e.g. gemini-flash) sometimes
+  // pass the candidate's DISPLAY LABEL "SYMBOL-SOL (BASE58ADDR)" instead of the
+  // raw address. That malformed value fails every downstream API lookup with a
+  // misleading "Pool ... not found", silently blocking good candidates.
+  // Repeatedly observed: HENRY-SOL, TOLYBOT-SOL (x3), ASTEROID-SOL, Bear-SOL,
+  // Wish-SOL. Extract the base58 key so the real address is always used.
+  const FULL_ADDR = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  const ADDR_IN_STR = /[1-9A-HJ-NP-Za-km-z]{32,44}/;
+  for (const key of ["pool_address", "base_mint", "position_address"]) {
+    const raw = args?.[key];
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (FULL_ADDR.test(trimmed)) {
+      if (trimmed !== raw) args[key] = trimmed;
+      continue;
+    }
+    const match = trimmed.match(ADDR_IN_STR);
+    if (match) {
+      log("sanitize", `Normalized ${key} "${raw}" -> "${match[0]}" (model passed a label, not a raw address)`);
+      args[key] = match[0];
+    }
+  }
+
   // ─── Validate tool exists ─────────────────
   const fn = toolMap[name];
   if (!fn) {
