@@ -168,7 +168,7 @@ export const config = {
 
   // ─── Strategy Mapping ───────────────────
   strategy: {
-    strategy:     u.strategy     ?? "bid_ask",
+    strategy:     "curve",  // FORCED on curve-strategy-test branch — overrides user-config. `git checkout main` reverts to spot/user-config.
     minBinsBelow: strategyMinBinsBelow,
     maxBinsBelow: strategyMaxBinsBelow,
     defaultBinsBelow: strategyDefaultBinsBelow,
