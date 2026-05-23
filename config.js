@@ -73,6 +73,8 @@ export const config = {
     whaleDumpCooldownHours: u.whaleDumpCooldownHours ?? 12, // base cooldown for any whale-dump close
     whaleDumpEscalationHours: u.whaleDumpEscalationHours ?? 48, // applied when 2+ consecutive whale dumps in same pool
     whaleDumpBlacklistCount: u.whaleDumpBlacklistCount ?? 3, // refuse deploy entirely after this many consecutive whale dumps
+    whaleDumpTotalCount:    u.whaleDumpTotalCount    ?? 3,   // refuse if TOTAL whale dumps (not just consecutive) in window hits this — catches periodic dumpers
+    whaleDumpTotalWindowHours: u.whaleDumpTotalWindowHours ?? 168, // rolling window (7d) for the total-dump-count check
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl !== undefined ? u.maxTvl : 150_000,
     minVolume:         u.minVolume         ?? 500,
@@ -315,6 +317,8 @@ export function reloadScreeningThresholds() {
     if (fresh.whaleDumpCooldownHours  != null) s.whaleDumpCooldownHours  = fresh.whaleDumpCooldownHours;
     if (fresh.whaleDumpEscalationHours != null) s.whaleDumpEscalationHours = fresh.whaleDumpEscalationHours;
     if (fresh.whaleDumpBlacklistCount != null) s.whaleDumpBlacklistCount = fresh.whaleDumpBlacklistCount;
+    if (fresh.whaleDumpTotalCount     != null) s.whaleDumpTotalCount     = fresh.whaleDumpTotalCount;
+    if (fresh.whaleDumpTotalWindowHours != null) s.whaleDumpTotalWindowHours = fresh.whaleDumpTotalWindowHours;
     const minBinsBelow = numericConfig(fresh.minBinsBelow) ?? config.strategy.minBinsBelow;
     const maxBinsBelow = numericConfig(fresh.maxBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.maxBinsBelow;
     const defaultBinsBelow = numericConfig(fresh.defaultBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.defaultBinsBelow ?? maxBinsBelow;

@@ -14,7 +14,7 @@ import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
 
-import { getPoolMemory, addPoolNote, findRecentWhaleDumpByBaseMint, countConsecutiveWhaleDumpsByBaseMint } from "../pool-memory.js";
+import { getPoolMemory, addPoolNote, findRecentWhaleDumpByBaseMint, countConsecutiveWhaleDumpsByBaseMint, countWhaleDumpsByBaseMintInWindow } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
@@ -794,6 +794,24 @@ async function runSafetyChecks(name, args) {
       //   2. Re-entry into a pool that recently produced a negative close
       //   3. Pools where a single non-pool holder concentration > maxSingleHolderPct (whale risk)
       try {
+        // PERIODIC-DUMPER check (total whale dumps in a rolling window).
+        // Catches tokens like TOLYBOT that dump every ~2 days WITH wins between —
+        // consecutive-counter resets on wins and 48h cooldown expires, so the
+        // standard cooldowns structurally miss them. This counts TOTAL dumps for
+        // the mint within whaleDumpTotalWindowHours regardless of pool or wins.
+        if (args.base_mint) {
+          const whaleDumpTotalCount = numberOrNull(config.screening.whaleDumpTotalCount) ?? 3;
+          const whaleDumpTotalWindowHours = numberOrNull(config.screening.whaleDumpTotalWindowHours) ?? 168;
+          const totalDumps = countWhaleDumpsByBaseMintInWindow(args.base_mint, whaleDumpTotalWindowHours);
+          if (totalDumps >= whaleDumpTotalCount) {
+            log("safety_block", `Token ${args.base_mint.slice(0, 8)}… periodic dumper: ${totalDumps} whale dumps in last ${whaleDumpTotalWindowHours}h (limit ${whaleDumpTotalCount}) — refusing deploy`);
+            return {
+              pass: false,
+              reason: `Token ${args.base_mint.slice(0, 8)}… has ${totalDumps} whale dumps in the last ${whaleDumpTotalWindowHours}h (limit ${whaleDumpTotalCount}) — periodic dumper. Refusing deploy regardless of wins between dumps.`,
+            };
+          }
+        }
+
         // BASE-MINT-LEVEL whale-dump check (token-wide, across ALL pool addresses)
         // Catches the case where a token has multiple pools — e.g. Embrace had
         // pool 9eSpnMgE (whale dumped twice on May 18) then a second pool

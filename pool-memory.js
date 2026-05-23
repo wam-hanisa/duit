@@ -283,6 +283,31 @@ export function countConsecutiveWhaleDumpsByBaseMint(baseMint) {
   return count;
 }
 
+/**
+ * Count TOTAL whale-dump closes for a base_mint within a rolling time window,
+ * across all pools — regardless of wins in between or cooldown expiry.
+ * Catches "periodic dumpers" (e.g. TOLYBOT: dumped May 20/21/23 with wins
+ * between) that consecutive- or time-based cooldowns structurally miss.
+ */
+export function countWhaleDumpsByBaseMintInWindow(baseMint, windowHours) {
+  if (!baseMint) return 0;
+  const db = load();
+  const cutoff = Date.now() - Number(windowHours) * 3_600_000;
+  let count = 0;
+  for (const entry of Object.values(db)) {
+    if (entry?.base_mint !== baseMint) continue;
+    if (!Array.isArray(entry.deploys)) continue;
+    for (const deploy of entry.deploys) {
+      const reason = String(deploy?.close_reason || "").toLowerCase();
+      if (!reason.includes("whale") && !reason.includes("🐋")) continue;
+      const closedAtMs = deploy?.closed_at ? Date.parse(deploy.closed_at) : null;
+      if (closedAtMs == null || closedAtMs < cutoff) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
 export function isBaseMintOnCooldown(baseMint) {
   if (!baseMint) return false;
   const db = load();
