@@ -308,6 +308,29 @@ export function countWhaleDumpsByBaseMintInWindow(baseMint, windowHours) {
   return count;
 }
 
+/**
+ * Net realized PnL (USD) and deploy count for a base_mint across ALL its pools.
+ * Used to auto-block "slow bleeder" tokens that are reliably net-negative even
+ * if they don't trigger the whale-dump rules (e.g. RoyalPop -$44, Embrace -$21).
+ */
+export function getBaseMintNetStats(baseMint) {
+  if (!baseMint) return { deploys: 0, netUsd: 0 };
+  const db = load();
+  let deploys = 0;
+  let netUsd = 0;
+  for (const entry of Object.values(db)) {
+    if (entry?.base_mint !== baseMint) continue;
+    if (!Array.isArray(entry.deploys)) continue;
+    for (const d of entry.deploys) {
+      const pnl = Number(d?.pnl_usd);
+      if (!Number.isFinite(pnl)) continue;
+      deploys += 1;
+      netUsd += pnl;
+    }
+  }
+  return { deploys, netUsd: Number(netUsd.toFixed(2)) };
+}
+
 export function isBaseMintOnCooldown(baseMint) {
   if (!baseMint) return false;
   const db = load();

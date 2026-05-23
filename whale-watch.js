@@ -42,7 +42,7 @@ export async function checkWhaleActivity(position, trackedPos, mgmtConfig) {
 
   const now = Date.now();
   const prev = _snapshots.get(positionAddress) || {};
-  const signals = { holderDrop: 0, priceDropFast: 0, tvlDrop: 0 };
+  const signals = { holderDrop: 0, priceDropFast: 0, tvlDrop: 0, declineStreak: 0 };
   let score = 0;
   const reasons = [];
 
@@ -118,15 +118,43 @@ export async function checkWhaleActivity(position, trackedPos, mgmtConfig) {
     }
   }
 
+  // ─── Signal D: Sustained decline (slow-grind dump early warning) ─
+  // 36% of past dumps showed 3+ consecutive declining polls before the
+  // cliff. Catch those ~10 min earlier than the single-poll crash signals.
+  let declineStreak = prev.declineStreak || 0;
+  let streakStartPnl = prev.streakStartPnl;
+  if (Number.isFinite(currentPnl) && Number.isFinite(prevPnl)) {
+    if (currentPnl < prevPnl - 0.05) {
+      if (declineStreak === 0) streakStartPnl = prevPnl; // mark where the slide began
+      declineStreak += 1;
+    } else {
+      declineStreak = 0;
+      streakStartPnl = undefined;
+    }
+  }
+  const declineStreakCount = mgmtConfig.whaleDeclineStreakCount ?? 3;
+  const declineStreakMinDrop = mgmtConfig.whaleDeclineStreakMinDropPct ?? 2;
+  if (
+    declineStreakCount > 0 &&
+    declineStreak >= declineStreakCount &&
+    Number.isFinite(streakStartPnl) &&
+    (streakStartPnl - currentPnl) >= declineStreakMinDrop
+  ) {
+    signals.declineStreak = 2;
+    reasons.push(`sustained decline: ${declineStreak} polls, -${(streakStartPnl - currentPnl).toFixed(2)}% from streak start`);
+  }
+
   // Update snapshot for next poll
   _snapshots.set(positionAddress, {
     holders: holders || prev.holders,
     pnl_pct: Number.isFinite(currentPnl) ? currentPnl : prev.pnl_pct,
     pool_tvl: Number.isFinite(currentTvl) ? currentTvl : prev.pool_tvl,
+    declineStreak,
+    streakStartPnl,
     last_check_at: now,
   });
 
-  score = signals.holderDrop + signals.priceDropFast + signals.tvlDrop;
+  score = signals.holderDrop + signals.priceDropFast + signals.tvlDrop + signals.declineStreak;
 
   const threshold = mgmtConfig.whaleDumpScoreThreshold ?? 3;
   if (score >= threshold) {

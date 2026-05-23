@@ -180,13 +180,18 @@ export async function recordPerformance(perf) {
   // Evolve thresholds every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
     const { config, reloadScreeningThresholds } = await import("./config.js");
-    const result = evolveThresholds(data.performance, config);
-    if (result?.changes && Object.keys(result.changes).length > 0) {
-      reloadScreeningThresholds();
-      log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+    // Opt-in (default OFF): auto-evolve silently overwrites manually-tuned
+    // thresholds (maxVolatility etc.) every 5 closes. Off by default so hand
+    // tuning is respected; flip evolveThresholdsEnabled=true to let it adapt.
+    if (config.management?.evolveThresholdsEnabled) {
+      const result = evolveThresholds(data.performance, config);
+      if (result?.changes && Object.keys(result.changes).length > 0) {
+        reloadScreeningThresholds();
+        log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+      }
     }
 
-    // Darwinian signal weight recalculation
+    // Darwinian signal weight recalculation (separate toggle, unaffected)
     if (config.darwin?.enabled) {
       const { recalculateWeights } = await import("./signal-weights.js");
       const wResult = recalculateWeights(data.performance, config);
@@ -357,12 +362,12 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
-  // ── 2. minFeeTvlRatio ─────────────────────────────────────────
+  // ── 2. minFeeActiveTvlRatio ─────────────────────────────────────────
   // Raise the floor if low-fee pools consistently underperform.
   {
     const winnerFees = winners.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
     const loserFees  = losers.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
-    const current    = config.screening.minFeeTvlRatio;
+    const current    = config.screening.minFeeActiveTvlRatio;
 
     if (winnerFees.length >= 2) {
       // Minimum fee/TVL among winners — we know pools below this don't work for us
@@ -372,8 +377,8 @@ export function evolveThresholds(perfData, config) {
         const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
         const rounded = Number(newVal.toFixed(2));
         if (rounded > current) {
-          changes.minFeeTvlRatio = rounded;
-          rationale.minFeeTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
+          changes.minFeeActiveTvlRatio = rounded;
+          rationale.minFeeActiveTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
         }
       }
     }
@@ -388,9 +393,9 @@ export function evolveThresholds(perfData, config) {
           const target  = maxLoserFee * 1.2;
           const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
           const rounded = Number(newVal.toFixed(2));
-          if (rounded > current && !changes.minFeeTvlRatio) {
-            changes.minFeeTvlRatio = rounded;
-            rationale.minFeeTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
+          if (rounded > current && !changes.minFeeActiveTvlRatio) {
+            changes.minFeeActiveTvlRatio = rounded;
+            rationale.minFeeActiveTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
           }
         }
       }
@@ -438,7 +443,7 @@ export function evolveThresholds(perfData, config) {
   // Apply to live config object immediately
   const s = config.screening;
   if (changes.maxVolatility    != null) s.maxVolatility    = changes.maxVolatility;
-  if (changes.minFeeTvlRatio   != null) s.minFeeTvlRatio   = changes.minFeeTvlRatio;
+  if (changes.minFeeActiveTvlRatio   != null) s.minFeeActiveTvlRatio   = changes.minFeeActiveTvlRatio;
   if (changes.minOrganic       != null) s.minOrganic       = changes.minOrganic;
 
   // Log a lesson summarizing the evolution

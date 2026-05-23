@@ -535,6 +535,56 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
     }
 
+    // ─── Deterministic-first deploy (opt-in, no LLM) ──────────────
+    // `passing` is already score-ordered (getTopCandidates ranks by fee/TVL).
+    // Pick the first candidate that clears the lone-candidate quality gate and
+    // deploy it directly — skips the LLM (saves tokens, no retry loops). All
+    // deploy_position safety checks still apply; if blocked, report NO DEPLOY.
+    if (config.management.deterministicScreening) {
+      let chosen = null;
+      for (const cand of passing) {
+        if (!getLoneCandidateSkipReason(cand)) { chosen = cand; break; }
+      }
+      if (!chosen) {
+        screenReport = `⛔ NO DEPLOY (deterministic)\n\nAll ${passing.length} candidate(s) failed the quality gate (wash/rugpull/pvp/fees/top10/bots).`;
+        appendDecision({ type: "no_deploy", actor: "SCREENER", summary: "Deterministic: all candidates failed quality gate", reason: "quality gate" });
+        return screenReport;
+      }
+      const c = chosen.pool;
+      let binsBelow;
+      try {
+        binsBelow = computeBinsBelow(c.volatility);
+      } catch (e) {
+        screenReport = `⛔ NO DEPLOY (deterministic)\n\nTop candidate ${c.name} has unusable volatility (${c.volatility ?? "?"}).`;
+        appendDecision({ type: "no_deploy", actor: "SCREENER", summary: "Deterministic: unusable volatility", reason: e.message, pool: c.pool, pool_name: c.name });
+        return screenReport;
+      }
+      const deployAmount = computeDeployAmount((await getWalletBalances()).sol);
+      const result = await executeTool("deploy_position", {
+        pool_address: c.pool,
+        amount_y: deployAmount,
+        strategy: config.strategy.strategy,
+        bins_below: binsBelow,
+        bins_above: 0,
+        pool_name: c.name,
+        base_mint: c.base?.mint || c.base_mint || null,
+        bin_step: c.bin_step,
+        base_fee: c.base_fee,
+        volatility: c.volatility,
+        fee_tvl_ratio: c.fee_active_tvl_ratio ?? c.fee_tvl_ratio,
+        organic_score: c.organic_score,
+        initial_value_usd: c.tvl ?? c.active_tvl ?? null,
+      });
+      if (result?.success === false || result?.error) {
+        screenReport = `⛔ NO DEPLOY (deterministic)\n\n${c.name} blocked by safety check: ${result.error || "deploy failed"}`;
+        appendDecision({ type: "no_deploy", actor: "SCREENER", summary: "Deterministic deploy blocked", reason: result.error || "deploy failed", pool: c.pool, pool_name: c.name });
+        return screenReport;
+      }
+      screenReport = `🚀 DEPLOYED (deterministic)\n\n${c.name}\n${c.pool}\n◎ ${deployAmount} SOL | ${config.strategy.strategy} | ${binsBelow} bins below | vol ${Number(c.volatility).toFixed(2)}`;
+      appendDecision({ type: "deploy", actor: "SCREENER", summary: `Deterministic deploy ${c.name}`, pool: c.pool, pool_name: c.name });
+      return screenReport;
+    }
+
     // Pre-fetch active_bin for all passing candidates in parallel
     const activeBinResults = await Promise.allSettled(
       passing.map(({ pool }) => getActiveBin({ pool_address: pool.pool }))

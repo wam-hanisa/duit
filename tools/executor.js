@@ -14,7 +14,7 @@ import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
 
-import { getPoolMemory, addPoolNote, findRecentWhaleDumpByBaseMint, countConsecutiveWhaleDumpsByBaseMint, countWhaleDumpsByBaseMintInWindow } from "../pool-memory.js";
+import { getPoolMemory, addPoolNote, findRecentWhaleDumpByBaseMint, countConsecutiveWhaleDumpsByBaseMint, countWhaleDumpsByBaseMintInWindow, getBaseMintNetStats } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
@@ -794,6 +794,22 @@ async function runSafetyChecks(name, args) {
       //   2. Re-entry into a pool that recently produced a negative close
       //   3. Pools where a single non-pool holder concentration > maxSingleHolderPct (whale risk)
       try {
+        // TOXIC-TOKEN check (cumulative net PnL across all the mint's pools).
+        // Catches reliable money-losers that don't trigger the dump rules —
+        // slow bleeders like RoyalPop (-$44 net), Embrace (-$21), BABYTROLL (-$9.50).
+        if (args.base_mint) {
+          const toxicMinDeploys = numberOrNull(config.screening.toxicTokenMinDeploys) ?? 3;
+          const toxicMaxNetUsd = numberOrNull(config.screening.toxicTokenMaxNetUsd) ?? -8;
+          const mintStats = getBaseMintNetStats(args.base_mint);
+          if (mintStats.deploys >= toxicMinDeploys && mintStats.netUsd <= toxicMaxNetUsd) {
+            log("safety_block", `Token ${args.base_mint.slice(0, 8)}… toxic: net $${mintStats.netUsd} over ${mintStats.deploys} deploys (limit $${toxicMaxNetUsd}) — refusing deploy`);
+            return {
+              pass: false,
+              reason: `Token ${args.base_mint.slice(0, 8)}… is net-negative: $${mintStats.netUsd} across ${mintStats.deploys} deploys (toxic threshold $${toxicMaxNetUsd}). Reliable money-loser — refusing deploy.`,
+            };
+          }
+        }
+
         // PERIODIC-DUMPER check (total whale dumps in a rolling window).
         // Catches tokens like TOLYBOT that dump every ~2 days WITH wins between —
         // consecutive-counter resets on wins and 48h cooldown expires, so the

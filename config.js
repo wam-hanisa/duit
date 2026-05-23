@@ -75,6 +75,8 @@ export const config = {
     whaleDumpBlacklistCount: u.whaleDumpBlacklistCount ?? 3, // refuse deploy entirely after this many consecutive whale dumps
     whaleDumpTotalCount:    u.whaleDumpTotalCount    ?? 3,   // refuse if TOTAL whale dumps (not just consecutive) in window hits this — catches periodic dumpers
     whaleDumpTotalWindowHours: u.whaleDumpTotalWindowHours ?? 168, // rolling window (7d) for the total-dump-count check
+    toxicTokenMinDeploys:   u.toxicTokenMinDeploys   ?? 3,   // min deploys before the cumulative-PnL toxic check applies
+    toxicTokenMaxNetUsd:    u.toxicTokenMaxNetUsd    ?? -8,  // refuse a mint whose net realized PnL across all its pools is <= this
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl !== undefined ? u.maxTvl : 150_000,
     minVolume:         u.minVolume         ?? 500,
@@ -109,6 +111,8 @@ export const config = {
   management: {
     minClaimAmount:        u.minClaimAmount        ?? 5,
     autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? false,
+    evolveThresholdsEnabled: u.evolveThresholdsEnabled ?? false, // OFF: respect manual tuning. ON: auto-evolve screening thresholds every 5 closes
+    deterministicScreening: u.deterministicScreening ?? false, // ON: deploy top-scored safe candidate without the LLM (skips LLM cost/retry loops)
     outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
     outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
     minProfitToCloseOorPct: u.minProfitToCloseOorPct ?? 0, // don't OOR-close a profitable position below this % (fees > profit); 0 = disabled
@@ -146,6 +150,8 @@ export const config = {
     whaleFastDropPct:             u.whaleFastDropPct             ?? 3,    // PnL drop in 30s window (+2 score)
     whaleCrashDropPct:            u.whaleCrashDropPct            ?? 6,    // PnL crash in 30s window (+3 score)
     whaleTvlDropPct:              u.whaleTvlDropPct              ?? 10,   // pool TVL drop in 30s window (+1 score)
+    whaleDeclineStreakCount:      u.whaleDeclineStreakCount      ?? 3,    // consecutive declining 30s polls → slow-grind dump warning (+2 score); 0 = off
+    whaleDeclineStreakMinDropPct: u.whaleDeclineStreakMinDropPct ?? 2,    // cumulative drop over the streak required to fire
     // Smart-wallet auto-maintenance — auto-add high performers, auto-remove inactive
     smartWalletAutoAddEnabled:    u.smartWalletAutoAddEnabled    ?? false,
     smartWalletAutoRemoveEnabled: u.smartWalletAutoRemoveEnabled ?? false,
@@ -320,6 +326,8 @@ export function reloadScreeningThresholds() {
     if (fresh.whaleDumpBlacklistCount != null) s.whaleDumpBlacklistCount = fresh.whaleDumpBlacklistCount;
     if (fresh.whaleDumpTotalCount     != null) s.whaleDumpTotalCount     = fresh.whaleDumpTotalCount;
     if (fresh.whaleDumpTotalWindowHours != null) s.whaleDumpTotalWindowHours = fresh.whaleDumpTotalWindowHours;
+    if (fresh.toxicTokenMinDeploys    != null) s.toxicTokenMinDeploys    = fresh.toxicTokenMinDeploys;
+    if (fresh.toxicTokenMaxNetUsd     != null) s.toxicTokenMaxNetUsd     = fresh.toxicTokenMaxNetUsd;
     const minBinsBelow = numericConfig(fresh.minBinsBelow) ?? config.strategy.minBinsBelow;
     const maxBinsBelow = numericConfig(fresh.maxBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.maxBinsBelow;
     const defaultBinsBelow = numericConfig(fresh.defaultBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.defaultBinsBelow ?? maxBinsBelow;
