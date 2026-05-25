@@ -646,6 +646,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           organic_score:         pool.organic_score         ?? null,
           fee_tvl_ratio:         pool.fee_active_tvl_ratio  ?? null,
           volume:                pool.volume_window         ?? null,
+          volume_change_pct:     pool.volume_change_pct     ?? null,
           mcap:                  pool.mcap                  ?? null,
           holder_count:          ti?.holders                ?? null,
           smart_wallets_present: (sw?.in_pool?.length ?? 0) > 0,

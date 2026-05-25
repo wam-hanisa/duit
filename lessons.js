@@ -22,6 +22,7 @@ const PERFORMANCE_SIGNAL_FIELDS = [
   "organic_score",
   "fee_tvl_ratio",
   "volume",
+  "volume_change_pct",
   "mcap",
   "holder_count",
   "smart_wallets_present",
