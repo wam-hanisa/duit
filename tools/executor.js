@@ -188,7 +188,8 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
-  return { pass: true };
+  // Return detail so the caller can derive base_mint (LLM often omits it).
+  return { pass: true, detail };
 }
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
@@ -744,6 +745,17 @@ async function runSafetyChecks(name, args) {
     case "deploy_position": {
       const poolThresholds = await validateDeployPoolThresholds(args);
       if (!poolThresholds.pass) return poolThresholds;
+
+      // LLM-omitted base_mint fallback: Gemini Flash consistently leaves
+      // base_mint out of deploy_position calls (verified in actions-*.jsonl),
+      // which silently bypasses the toxic-token, periodic-dumper, and base-mint
+      // cooldown checks. Derive it from the already-fetched pool detail so
+      // those safety rules can actually fire. Zero extra API calls (reuses
+      // the fetch inside validateDeployPoolThresholds).
+      if (!args.base_mint && poolThresholds.detail?.token_x?.address) {
+        args.base_mint = poolThresholds.detail.token_x.address;
+        log("safety", `Derived missing base_mint ${args.base_mint.slice(0, 8)}… from pool detail (LLM omitted it)`);
+      }
 
       // Reject pools with bin_step out of configured range
       const minStep = config.screening.minBinStep;
