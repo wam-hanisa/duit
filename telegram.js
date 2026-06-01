@@ -352,7 +352,10 @@ async function poll(onMessage) {
         `${BASE}/getUpdates?offset=${_offset}&timeout=30`,
         { signal: AbortSignal.timeout(35_000) }
       );
-      if (!res.ok) { await sleep(5000); continue; }
+      if (!res.ok) {
+        log("telegram_warn", `getUpdates ${res.status} ${res.statusText} — polling stalled (check token / webhook conflict)`);
+        await sleep(5000); continue;
+      }
       const data = await res.json();
       for (const update of data.result || []) {
         _offset = update.update_id + 1;

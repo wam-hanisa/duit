@@ -211,7 +211,10 @@ export async function runManagementCycle({ silent = false } = {}) {
     if (!silent && telegramEnabled()) {
       liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
     }
-    const livePositions = await getMyPositions({ force: true }).catch(() => null);
+    const livePositions = await getMyPositions({ force: true }).catch((e) => {
+      log("cron_error", `getMyPositions failed in management cycle: ${e.message} — treating as 0 positions (was silently swallowed before)`);
+      return null;
+    });
     positions = livePositions?.positions || [];
 
     if (positions.length === 0) {

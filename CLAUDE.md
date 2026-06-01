@@ -679,9 +679,35 @@ A yield-triggered fast management variant lives in `C:\Data\Duit\duit-cepat\`. K
 
 ---
 
-## Recent Fixes (May 19-22, 2026)
+## Recent Fixes (May 19-27, 2026)
 
 ### ✅ Fixed
+- **EP-leaning strategy regime applied (May 27)**: After comparing config against Evil Panda's pinned DLMM playbook ([@EvilPanda](https://x.com/EvilPanda) — wider ranges, fees-first patience, indicator-gated entries, diversified), shifted toward EP's philosophy via 14 `user-config.json` changes. Trades scalping-style fast cuts for fee-farming patience. **Capital constraint: `maxPositions` stays at 1 (1.5 SOL wallet) — the diversification half of EP's strategy is NOT in place**, so single-position downside is unbuffered (one bad pick = full allocation). **Rollback table** (before → after):
+
+  | Key | Before | After | Phase | Rollback risk |
+  |---|---|---|---|---|
+  | `strategy` | curve | spot | 3 | low — both valid DLMM dists |
+  | `binsBelow` | 30 | 50 | 3 | medium — wider range fights tight exits |
+  | `positionSizePct` | 0.35 | 0.2 | 2 | low — only matters at >5 SOL wallet |
+  | `minBinStep` | 80 | 100 | 3 | low — slight pool universe reduction |
+  | `minMcap` | 50000 | 200000 | 4 | **high — biggest candidate-pool cut** |
+  | `maxTop10Pct` | 60 | 40 | 4 | medium — quality vs supply |
+  | `minTokenAgeHours` | 2 | 4 | 4 | low — minor candidate cut |
+  | `outOfRangeBinsToClose` | 10 | 15 | 3 | low — matches wider range |
+  | `outOfRangeWaitMinutes` | 15 | 25 | 3 | medium — slower OOR exits |
+  | `stopLossPct` | -13 | -20 | 3 | **high — biggest tolerance shift** |
+  | `trailingDropPct` | 1.2 | 2.0 | 3 | medium — less twitchy exit |
+  | `chartIndicators.enabled` | false | **true** | 1 | low — unlocks built feature |
+  | `chartIndicators.intervals` | `5_MINUTE` | `15_MINUTE` | 1 | low — matches EP calibration |
+  | `chartIndicators.rsiOverbought` | 80 | 90 | 1 | low — matches EP calibration |
+
+  **Kept (already EP-aligned, fixed earlier this week, or capital-locked)**: `maxPositions: 1`, `deployAmountSol: 1`, `minSolToOpen: 1.45`, `whaleDumpScoreThreshold: 3`, `whaleFastDropPct: 3`, `maxBundlePct: 7` (tighter than EP's <60), `minTokenFeesSol: 30`, `repeatDeployCooldownEnabled: false`, `evolveThresholdsEnabled: false`, `maxBinStep: 250` (allows widest range when vol is high).
+
+  **Watch after `pm2 restart duit`** (first 24–48h): position survival time (expect ↑), OOR closes (expect ↓), fees per closed position (expect ↑), catastrophic losses ≤−15% (expect +1–2 as the SL widening trade-off), candidates per cycle (expect ↓ from mcap+age tightening). Run `node analyze-snapshots.cjs --since=2026-05-27` in ~1 week to compare regimes.
+
+  **Partial rollback paths** (try in order if regime underperforms): (1) revert `stopLossPct: -20 → -13` first — restores tight backstop without touching the rest; (2) if candidate pool dries up entirely (0 candidates for hours), revert `minMcap: 200000 → 100000` next; (3) full rollback = restore every "Before" column above.
+
+  **⚠️ The "Current Config Rationale (May 20)" code block earlier in this doc is now stale** — treat this entry as the live config reference until that block is updated.
 - **Volume-trend signal logging added (May 25)**: To enable thread-style ([@dikibagast](https://x.com/dikibagast) overfitting-discipline analysis) snapshot research, the entry snapshot now captures `volume_change_pct` (the Meteora API field used to bucket Accelerating/Stable/Decelerating volume). Wired through `screening.js` condensePool → `index.js` stageSignals → `lessons.js` PERFORMANCE_SIGNAL_FIELDS. Purely additive (logging only — does NOT affect deploy decisions, and deliberately NOT added to `signal-weights.js` so Darwin won't auto-act on it). Existing snapshots already log volume/fee_tvl_ratio/holder_count/mcap/organic_score/volatility in `lessons.json → performance[].signal_snapshot` (133 of 282 records as of May 25). After ~2–3 weeks of new data, run the bucket analysis to see if volume-trend is a worthwhile filter for *this* agent.
 - **Normal-loss re-entry un-blocked (May 22)**: prompt.js had a blanket HARD RULE — `last_outcome.pnl_pct < 0 within reentryAfterLossHours (6h) → SKIP`, claiming "the safety check will reject this anyway." That claim was **false** and **pre-empted the Smart Re-Entry system**: the LLM skipped *every* recently-lost pool (HENRY/DEGEN/TOLYBOT/BABYTROLL all rejected each cycle), so the Layer-4 smart re-entry (30m hard floor → allow if vol calmed + TVL/fees healthy) never ran. Because the best pools are the recurring trending ones, a single normal loss benched them for 6h — a second starvation source alongside the winner-cooldown bug. **Fix**: prompt.js now hard-skips only whale dumps (12–48h), "pumped" (60m), low-yield, and 3×-OOR (24h) closes, plus a `reentryMinCooldownMin` (30m) floor; a normal loss past 30m is deferred to the smart re-entry safety check (Layer 4), which allows it iff the pool stabilized. Matches the documented Smart Re-Entry design intent.
 - **Non-SOL-quoted pools blocked (May 22)**: The screener returned pools quoted in non-SOL tokens (HYPE-**ZEC**, WOJAK-**USDC**) and nothing filtered them out — `getRawPoolScreeningRejectReason` checked quote organic/warnings but never that `token_y` was wrapped SOL, and prompt.js never told the LLM to require SOL. gemini-flash picked HYPE-ZEC; the deploy reached on-chain simulation and failed: `custom program error: 0x1` (`Tokenkeg… insufficient funds`) — because this agent does single-sided SOL deploys, the deposit token was ZEC, which the wallet holds none of. **Fix**: (1) screening.js now rejects any pool whose `token_y.address !== So1111…1112` *before the LLM sees it*; (2) executor.js `validateDeployPoolThresholds` re-checks the quote mint on the fresh pool detail as a safety net. Confirmed `token_y` is the quote and is `So111…112`/"SOL" for SOL pools. (The `0x1` insufficient-funds error here was the *wrong quote token*, NOT a low SOL balance.)
