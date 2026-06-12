@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { setPositionInstruction, getTrackedPosition } from "../state.js";
 
 import { getPoolMemory, addPoolNote, findRecentWhaleDumpByBaseMint, countConsecutiveWhaleDumpsByBaseMint, countWhaleDumpsByBaseMintInWindow, getBaseMintNetStats } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -20,7 +20,7 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
-import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW } from "../config.js";
+import { config, reloadScreeningThresholds, MIN_SAFE_BINS_BELOW, resolveSlotConfig } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
 import fs from "fs";
 import path from "path";
@@ -83,9 +83,12 @@ async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.ti
 }
 
 async function validateDeployPoolThresholds(args) {
+  // Validate against THIS deploy's slot thresholds (slot 2 may use different
+  // TVL / fee-ratio / volatility / bin-step / timeframe than slot 1).
+  const sc = resolveSlotConfig(args.slot).screening;
   let detail;
   try {
-    detail = await fetchFreshPoolDetail(args.pool_address);
+    detail = await fetchFreshPoolDetail(args.pool_address, sc.timeframe);
     if (!detail) throw new Error(`Pool ${args.pool_address} not found`);
   } catch (error) {
     return {
@@ -110,8 +113,8 @@ async function validateDeployPoolThresholds(args) {
   }
 
   const tvl = poolDetailTvl(detail);
-  const minTvl = numberOrNull(config.screening.minTvl);
-  const maxTvl = numberOrNull(config.screening.maxTvl);
+  const minTvl = numberOrNull(sc.minTvl);
+  const maxTvl = numberOrNull(sc.maxTvl);
   if (tvl == null) {
     return {
       pass: false,
@@ -132,7 +135,7 @@ async function validateDeployPoolThresholds(args) {
   }
 
   const feeActiveTvlRatio = poolDetailFeeActiveTvlRatio(detail);
-  const minFeeActiveTvlRatio = numberOrNull(config.screening.minFeeActiveTvlRatio);
+  const minFeeActiveTvlRatio = numberOrNull(sc.minFeeActiveTvlRatio);
   if (
     minFeeActiveTvlRatio != null &&
     minFeeActiveTvlRatio > 0 &&
@@ -144,9 +147,9 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
-  const volatilityTimeframe = getVolatilityTimeframe(config.screening.timeframe || "5m");
+  const volatilityTimeframe = getVolatilityTimeframe(sc.timeframe || "5m");
   let volatilityDetail = detail;
-  if ((config.screening.timeframe || "5m") !== volatilityTimeframe) {
+  if ((sc.timeframe || "5m") !== volatilityTimeframe) {
     try {
       volatilityDetail = await fetchFreshPoolDetail(args.pool_address, volatilityTimeframe);
     } catch (error) {
@@ -164,7 +167,7 @@ async function validateDeployPoolThresholds(args) {
       reason: `Pool ${volatilityTimeframe} volatility ${volatility ?? "unknown"} is unusable. Refusing deploy.`,
     };
   }
-  const maxVolatility = numberOrNull(config.screening.maxVolatility);
+  const maxVolatility = numberOrNull(sc.maxVolatility);
   if (maxVolatility != null && maxVolatility > 0 && volatility > maxVolatility) {
     return {
       pass: false,
@@ -173,8 +176,8 @@ async function validateDeployPoolThresholds(args) {
   }
 
   const actualBinStep = poolDetailBinStep(detail);
-  const minStep = numberOrNull(config.screening.minBinStep);
-  const maxStep = numberOrNull(config.screening.maxBinStep);
+  const minStep = numberOrNull(sc.minBinStep);
+  const maxStep = numberOrNull(sc.maxBinStep);
   if (actualBinStep != null && minStep != null && actualBinStep < minStep) {
     return {
       pass: false,
@@ -663,9 +666,11 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        const deploySlot = resolveSlotConfig(args.slot);
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee, slot: config.slots.length > 1 ? deploySlot.id : null, strategy: args.strategy || deploySlot.strategy.strategy }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.reason || null }).catch(() => {});
+        const closedTracked = args.position_address ? getTrackedPosition(args.position_address) : null;
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.reason || null, slot: config.slots.length > 1 ? (closedTracked?.slot ?? 1) : null, strategy: closedTracked?.strategy || null }).catch(() => {});
         // Free whale-watch snapshot memory for closed positions
         if (args.position_address) {
           import("../whale-watch.js").then(({ clearWhaleSnapshot }) => clearWhaleSnapshot(args.position_address)).catch(() => {});
@@ -743,6 +748,9 @@ export async function executeTool(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
+      // Resolve this deploy's slot so bin-step / volatility / sizing checks use
+      // the right slot's thresholds (slot 2 = bid-ask may differ from slot 1).
+      const slotCfg = resolveSlotConfig(args.slot);
       const poolThresholds = await validateDeployPoolThresholds(args);
       if (!poolThresholds.pass) return poolThresholds;
 
@@ -758,8 +766,8 @@ async function runSafetyChecks(name, args) {
       }
 
       // Reject pools with bin_step out of configured range
-      const minStep = config.screening.minBinStep;
-      const maxStep = config.screening.maxBinStep;
+      const minStep = slotCfg.screening.minBinStep;
+      const maxStep = slotCfg.screening.maxBinStep;
       if (args.bin_step != null && (args.bin_step < minStep || args.bin_step > maxStep)) {
         return {
           pass: false,
@@ -775,9 +783,9 @@ async function runSafetyChecks(name, args) {
           reason: "This agent only supports single-side SOL deploys. Use amount_y/amount_sol and keep amount_x=0.",
         };
       }
-      const requestedBinsBelow = Number(args.bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow);
+      const requestedBinsBelow = Number(args.bins_below ?? slotCfg.strategy.defaultBinsBelow ?? slotCfg.strategy.minBinsBelow);
       const requestedBinsAbove = Number(args.bins_above ?? 0);
-      const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
+      const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(slotCfg.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
       const isSingleSidedSol = deployAmountY > 0 && deployAmountX <= 0;
       const requestedTotalBins = requestedBinsBelow + requestedBinsAbove;
       const requestedVolatility = args.volatility == null ? null : Number(args.volatility);
@@ -787,7 +795,7 @@ async function runSafetyChecks(name, args) {
           reason: `volatility ${args.volatility} is invalid. Refusing deploy because the volatility feed is unusable.`,
         };
       }
-      const maxVolatility = numberOrNull(config.screening.maxVolatility);
+      const maxVolatility = numberOrNull(slotCfg.screening.maxVolatility);
       if (
         maxVolatility != null &&
         maxVolatility > 0 &&
@@ -1131,7 +1139,7 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+      const minDeploy = Math.max(0.1, slotCfg.management.deployAmountSol);
       if (amountY < minDeploy) {
         return {
           pass: false,
@@ -1148,7 +1156,7 @@ async function runSafetyChecks(name, args) {
       // Check SOL balance
       if (process.env.DRY_RUN !== "true") {
         const balance = await getWalletBalances();
-        const gasReserve = config.management.gasReserve;
+        const gasReserve = slotCfg.management.gasReserve;
         const minRequired = amountY + gasReserve;
         if (balance.sol < minRequired) {
           return {

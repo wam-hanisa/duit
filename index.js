@@ -8,7 +8,7 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
-import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
+import { config, reloadScreeningThresholds, computeDeployAmount, resolveSlotConfig, resolveSlotForPosition } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import {
@@ -141,10 +141,11 @@ function scheduleTrailingDropConfirmation(positionAddress) {
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       const position = result?.positions?.find((p) => p.position === positionAddress);
+      const confirmMgmt = resolveSlotConfig(resolveSlotForPosition(getTrackedPosition(positionAddress))).management;
       const resolved = resolvePendingTrailingDrop(
         positionAddress,
         position?.pnl_pct ?? null,
-        config.management.trailingDropPct,
+        confirmMgmt.trailingDropPct,
         TRAILING_DROP_CONFIRM_TOLERANCE_PCT,
       );
       if (resolved?.confirmed) {
@@ -224,10 +225,15 @@ export async function runManagementCycle({ silent = false } = {}) {
       return mgmtReport;
     }
 
-    // Snapshot + load pool memory
+    // Snapshot + load pool memory. Resolve each position's slot ONCE so every
+    // exit rule below uses that slot's management config (slot 2 = bid-ask may
+    // run different SL/TP/trailing/OOR than slot 1).
     const positionData = positions.map((p) => {
       recordPositionSnapshot(p.pool, p);
-      return { ...p, recall: recallForPool(p.pool) };
+      const tracked = getTrackedPosition(p.position);
+      const slotId = resolveSlotForPosition(tracked);
+      const slotMgmt = resolveSlotConfig(slotId).management;
+      return { ...p, recall: recallForPool(p.pool), slotId, slotMgmt, slotStrategy: tracked?.strategy || null };
     });
 
     // JS trailing TP check
@@ -240,10 +246,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       ) {
         schedulePeakConfirmation(p.position);
       }
-      const exit = updatePnlAndCheckExits(p.position, p, config.management);
+      const exit = updatePnlAndCheckExits(p.position, p, p.slotMgmt);
       if (exit) {
         if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
-          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, p.slotMgmt.trailingDropPct)) {
             scheduleTrailingDropConfirmation(p.position);
           }
           continue;
@@ -268,13 +274,13 @@ export async function runManagementCycle({ silent = false } = {}) {
         continue;
       }
 
-      const closeRule = getDeterministicCloseRule(p, config.management);
+      const closeRule = getDeterministicCloseRule(p, p.slotMgmt);
       if (closeRule) {
         actionMap.set(p.position, closeRule);
         continue;
       }
       // Claim rule
-      if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
+      if ((p.unclaimed_fees_usd ?? 0) >= p.slotMgmt.minClaimAmount) {
         actionMap.set(p.position, { action: "CLAIM" });
         continue;
       }
@@ -291,7 +297,8 @@ export async function runManagementCycle({ silent = false } = {}) {
       const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
       const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
       const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
+      const slotTag = config.slots.length > 1 ? ` [slot ${p.slotId}${p.slotStrategy ? ` · ${p.slotStrategy}` : ""}]` : "";
+      let line = `**${p.pair}**${slotTag} | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
       if (p.instruction) line += `\nNote: "${p.instruction}"`;
       if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
       if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
@@ -371,7 +378,8 @@ After executing, write a brief one-line result per position.
         else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
       for (const p of positions) {
-        if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
+        const oorWait = resolveSlotConfig(resolveSlotForPosition(getTrackedPosition(p.position))).management.outOfRangeWaitMinutes;
+        if (!p.in_range && p.minutes_out_of_range >= oorWait) {
           notifyOutOfRange({ pair: p.pair, minutesOOR: p.minutes_out_of_range }).catch(() => { });
         }
       }
@@ -380,6 +388,29 @@ After executing, write a brief one-line result per position.
   return mgmtReport;
 }
 
+/**
+ * Decide which slots are open to screen this cycle.
+ * - Single-slot (legacy, no user-config-2.json): screen slot 1 if there's room
+ *   under the global maxPositions cap — byte-for-byte the old behavior.
+ * - Multi-slot: a slot is occupied if it has a live on-chain position (joined to
+ *   its tracked record by address). Screen only the empty slots.
+ */
+function computeScreenableSlots(prePositions) {
+  if (config.slots.length === 1) {
+    return prePositions.total_positions < config.risk.maxPositions ? [config.slots[0]] : [];
+  }
+  const occupied = new Set();
+  for (const p of (prePositions.positions || [])) {
+    occupied.add(resolveSlotForPosition(getTrackedPosition(p.position)));
+  }
+  return config.slots.filter((s) => !occupied.has(s.id));
+}
+
+/**
+ * Orchestrator: owns the screening busy-guard, computes which slots are empty,
+ * and screens each sequentially (re-fetching balance between deploys so a later
+ * slot sees the SOL the earlier slot already committed).
+ */
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
@@ -387,54 +418,64 @@ export async function runScreeningCycle({ silent = false } = {}) {
   }
   _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
   _screeningLastTriggered = Date.now();
-
-  // Hard guards — don't even run the agent if preconditions aren't met
-  let prePositions, preBalance;
-  let liveMessage = null;
-  let screenReport = null;
+  let lastReport = null;
   try {
-    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
-    if (prePositions.total_positions >= config.risk.maxPositions) {
+    const isDryRun = process.env.DRY_RUN === "true";
+    let prePositions, preBalance;
+    try {
+      [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
+    } catch (e) {
+      log("cron_error", `Screening pre-check failed: ${e.message}`);
+      return `Screening pre-check failed: ${e.message}`;
+    }
+
+    const slotsToScreen = computeScreenableSlots(prePositions);
+    if (slotsToScreen.length === 0) {
       log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
         summary: "Screening skipped",
         reason: `Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`,
       });
-      _screeningBusy = false;
-      return screenReport;
+      return `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
     }
-    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
-    const isDryRun = process.env.DRY_RUN === "true";
-    if (!isDryRun && preBalance.sol < minRequired) {
-      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
-      appendDecision({
-        type: "skip",
-        actor: "SCREENER",
-        summary: "Screening skipped",
-        reason: `Insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired})`,
-      });
-      _screeningBusy = false;
-      return screenReport;
+
+    for (const slot of slotsToScreen) {
+      // Re-fetch balance before each slot — slot 1's deploy reduces what slot 2 sees.
+      const bal = await getWalletBalances().catch(() => preBalance);
+      const minRequired = slot.management.deployAmountSol + slot.management.gasReserve;
+      if (!isDryRun && bal.sol < minRequired) {
+        log("cron", `Slot ${slot.id} screening skipped — insufficient SOL (${bal.sol.toFixed(3)} < ${minRequired})`);
+        lastReport = `Screening skipped — insufficient SOL (${bal.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
+        continue;
+      }
+      lastReport = await screenSlot(slot, { silent, currentBalance: bal, prePositions });
     }
-  } catch (e) {
-    log("cron_error", `Screening pre-check failed: ${e.message}`);
-    screenReport = `Screening pre-check failed: ${e.message}`;
+    return lastReport;
+  } catch (error) {
+    log("cron_error", `Screening orchestrator failed: ${error.message}`);
+    return `Screening cycle failed: ${error.message}`;
+  } finally {
     _screeningBusy = false;
-    return screenReport;
   }
+}
+
+/**
+ * Screen ONE slot: find a candidate matching this slot's screening filters +
+ * strategy and deploy it. Does NOT own _screeningBusy (the orchestrator does).
+ */
+async function screenSlot(slot, { silent = false, currentBalance, prePositions }) {
+  let liveMessage = null;
+  let screenReport = null;
+  const slotLabel = config.slots.length > 1 ? ` (slot ${slot.id} · ${slot.strategy.strategy})` : "";
   if (!silent && telegramEnabled()) {
-    liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
+    liveMessage = await createLiveMessage(`🔍 Screening Cycle${slotLabel}`, "Scanning candidates...");
   }
   timers.screeningLastRun = Date.now();
-  log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
+  log("cron", `Starting screening cycle${slotLabel} [model: ${config.llm.screeningModel}]`);
   try {
-    // Reuse pre-fetched balance — no extra RPC call needed
-    const currentBalance = preBalance;
-    const deployAmount = computeDeployAmount(currentBalance.sol);
+    const deployAmount = computeDeployAmount(currentBalance.sol, slot.management);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
     // Load active strategy
@@ -444,7 +485,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       : `No active strategy — use default bid_ask, bins_above: 0, SOL only.`;
 
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
-    const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
+    const topCandidates = await getTopCandidates({ limit: 10, screening: slot.screening }).catch(() => null);
     const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
     const earlyFilteredExamples = topCandidates?.filtered_examples || [];
 
@@ -470,18 +511,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const filteredOut = [];
     const passing = allCandidates.filter(({ pool, ti }) => {
       const launchpad = ti?.launchpad ?? null;
-      if (launchpad && config.screening.allowedLaunchpads?.length > 0 && !config.screening.allowedLaunchpads.includes(launchpad)) {
+      if (launchpad && slot.screening.allowedLaunchpads?.length > 0 && !slot.screening.allowedLaunchpads.includes(launchpad)) {
         log("screening", `Skipping ${pool.name} — launchpad ${launchpad} not in allow-list`);
         filteredOut.push({ name: pool.name, reason: `launchpad ${launchpad} not in allow-list` });
         return false;
       }
-      if (launchpad && config.screening.blockedLaunchpads.includes(launchpad)) {
+      if (launchpad && slot.screening.blockedLaunchpads.includes(launchpad)) {
         log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
         filteredOut.push({ name: pool.name, reason: `blocked launchpad (${launchpad})` });
         return false;
       }
       const botPct = ti?.audit?.bot_holders_pct;
-      const maxBotHoldersPct = config.screening.maxBotHoldersPct;
+      const maxBotHoldersPct = slot.screening.maxBotHoldersPct;
       if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
         log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
         filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${maxBotHoldersPct}%` });
@@ -509,7 +550,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
 
     if (passing.length === 1) {
-      const skipReason = getLoneCandidateSkipReason(passing[0]);
+      const skipReason = getLoneCandidateSkipReason(passing[0], slot.screening);
       if (skipReason) {
         const candidateName = passing[0].pool?.name || "unknown";
         screenReport = [
@@ -543,10 +584,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Pick the first candidate that clears the lone-candidate quality gate and
     // deploy it directly — skips the LLM (saves tokens, no retry loops). All
     // deploy_position safety checks still apply; if blocked, report NO DEPLOY.
-    if (config.management.deterministicScreening) {
+    if (slot.management.deterministicScreening) {
       let chosen = null;
       for (const cand of passing) {
-        if (!getLoneCandidateSkipReason(cand)) { chosen = cand; break; }
+        if (!getLoneCandidateSkipReason(cand, slot.screening)) { chosen = cand; break; }
       }
       if (!chosen) {
         screenReport = `⛔ NO DEPLOY (deterministic)\n\nAll ${passing.length} candidate(s) failed the quality gate (wash/rugpull/pvp/fees/top10/bots).`;
@@ -556,17 +597,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const c = chosen.pool;
       let binsBelow;
       try {
-        binsBelow = computeBinsBelow(c.volatility);
+        binsBelow = computeBinsBelow(c.volatility, slot.strategy);
       } catch (e) {
         screenReport = `⛔ NO DEPLOY (deterministic)\n\nTop candidate ${c.name} has unusable volatility (${c.volatility ?? "?"}).`;
         appendDecision({ type: "no_deploy", actor: "SCREENER", summary: "Deterministic: unusable volatility", reason: e.message, pool: c.pool, pool_name: c.name });
         return screenReport;
       }
-      const deployAmount = computeDeployAmount((await getWalletBalances()).sol);
+      const deployAmount = computeDeployAmount((await getWalletBalances()).sol, slot.management);
       const result = await executeTool("deploy_position", {
         pool_address: c.pool,
         amount_y: deployAmount,
-        strategy: config.strategy.strategy,
+        strategy: slot.strategy.strategy,
+        slot: slot.id,
         bins_below: binsBelow,
         bins_above: 0,
         pool_name: c.name,
@@ -583,7 +625,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         appendDecision({ type: "no_deploy", actor: "SCREENER", summary: "Deterministic deploy blocked", reason: result.error || "deploy failed", pool: c.pool, pool_name: c.name });
         return screenReport;
       }
-      screenReport = `🚀 DEPLOYED (deterministic)\n\n${c.name}\n${c.pool}\n◎ ${deployAmount} SOL | ${config.strategy.strategy} | ${binsBelow} bins below | vol ${Number(c.volatility).toFixed(2)}`;
+      screenReport = `🚀 DEPLOYED (deterministic)${slotLabel}\n\n${c.name}\n${c.pool}\n◎ ${deployAmount} SOL | ${slot.strategy.strategy} | ${binsBelow} bins below | vol ${Number(c.volatility).toFixed(2)}`;
       appendDecision({ type: "deploy", actor: "SCREENER", summary: `Deterministic deploy ${c.name}`, pool: c.pool, pool_name: c.name });
       return screenReport;
     }
@@ -679,7 +721,7 @@ STEPS:
 1. Decide if any candidate is actually worth deploying. One surviving candidate is not automatically good enough.
 2. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
 3. Call deploy_position IMMEDIATELY — do not write your analysis first. Call the tool, then write the report using the result. (active_bin is pre-fetched above — no need to call get_active_bin).
-   bins_below = round(${config.strategy.minBinsBelow} + (candidate volatility/5)*(${config.strategy.maxBinsBelow - config.strategy.minBinsBelow})) clamped to [${config.strategy.minBinsBelow},${config.strategy.maxBinsBelow}].
+   bins_below = round(${slot.strategy.minBinsBelow} + (candidate volatility/5)*(${slot.strategy.maxBinsBelow - slot.strategy.minBinsBelow})) clamped to [${slot.strategy.minBinsBelow},${slot.strategy.maxBinsBelow}].
    pass deploy_position.volatility = the candidate volatility value.
    For single-side SOL deploys, do not invent upside:
    set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
@@ -739,6 +781,7 @@ IMPORTANT:
 - Never write "unknown" for OKX. Use real values, omit missing fields, or write exactly "OKX: unavailable".
 - Keep the whole report compact and highly scannable for Telegram.
       `, config.llm.screeningMaxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
+        slot,
         onToolStart: async ({ name }) => {
           if (name === "deploy_position") deployAttempted = true;
           await liveMessage?.toolStart(name);
@@ -761,6 +804,7 @@ IMPORTANT:
         const { content: retryContent } = await agentLoop(
           `You analyzed candidates and chose to deploy but did NOT call the deploy_position tool. Call deploy_position NOW for your chosen pool. Do not re-analyze. Just execute the deploy.\n\nYour previous analysis:\n${content.slice(0, 2000)}`,
           5, [], "SCREENER", config.llm.screeningModel, 2048, {
+            slot,
             onToolStart: async ({ name }) => {
               if (name === "deploy_position") deployAttempted = true;
               await liveMessage?.toolStart(name);
@@ -797,7 +841,6 @@ IMPORTANT:
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
-    _screeningBusy = false;
     if (!silent && telegramEnabled()) {
       if (screenReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
@@ -870,6 +913,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
+        // Resolve this position's slot so its OWN exit rules apply
+        // (slot 2 = bid-ask may run different SL/TP/trailing than slot 1).
+        const trackedPos = getTrackedPosition(p.position);
+        const slotMgmt = resolveSlotConfig(resolveSlotForPosition(trackedPos)).management;
         if (
           !p.pnl_pct_suspicious &&
           queuePeakConfirmation(p.position, p.pnl_pct, { immediate: !shouldUsePnlRecheck() }) &&
@@ -877,10 +924,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
         ) {
           schedulePeakConfirmation(p.position);
         }
-        const exit = updatePnlAndCheckExits(p.position, p, config.management);
+        const exit = updatePnlAndCheckExits(p.position, p, slotMgmt);
         if (exit) {
           if (exit.action === "TRAILING_TP" && exit.needs_confirmation && shouldUsePnlRecheck()) {
-            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, slotMgmt.trailingDropPct)) {
               scheduleTrailingDropConfirmation(p.position);
             }
             continue;
@@ -900,7 +947,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
           }
           break;
         }
-        const closeRule = getDeterministicCloseRule(p, config.management);
+        const closeRule = getDeterministicCloseRule(p, slotMgmt);
         if (closeRule) {
           const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
           const sinceLastTrigger = Date.now() - _pollTriggeredAt;
@@ -914,10 +961,9 @@ Summarize the current portfolio health, total fees earned, and performance of al
           break;
         }
         // ── Whale Watch: detect coordinated whale dumps before they wreck IL ──
-        if (config.management.whaleWatchEnabled) {
+        if (slotMgmt.whaleWatchEnabled) {
           try {
-            const trackedPos = getTrackedPosition(p.position);
-            const whaleVerdict = await checkWhaleActivity(p, trackedPos, config.management);
+            const whaleVerdict = await checkWhaleActivity(p, trackedPos, slotMgmt);
             if (whaleVerdict?.detected) {
               // Whale dumps are always urgent — bypass the poll cooldown.
               // A coordinated dump unwinds in seconds; waiting up to 7m guarantees
@@ -1127,10 +1173,22 @@ function describeLatestCandidates(limit = 5) {
 function formatWalletStatus(wallet, positions) {
   const deployAmount = computeDeployAmount(wallet.sol);
   const hive = isHiveMindEnabled() ? "on" : "off";
+  let slotLines = [];
+  if (config.slots.length > 1) {
+    const occupied = new Map();
+    for (const p of (positions.positions || [])) {
+      const tracked = getTrackedPosition(p.position);
+      occupied.set(resolveSlotForPosition(tracked), p.pair);
+    }
+    slotLines = config.slots.map((s) =>
+      `Slot ${s.id} (${s.strategy.strategy}): ${occupied.has(s.id) ? `filled — ${occupied.get(s.id)}` : "empty"}`
+    );
+  }
   return [
     `Wallet: ${wallet.sol} SOL ($${wallet.sol_usd})`,
     `SOL price: $${wallet.sol_price}`,
     `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
+    ...slotLines,
     `Next deploy amount: ${deployAmount} SOL`,
     `Dry run: ${process.env.DRY_RUN === "true" ? "yes" : "no"}`,
     `HiveMind: ${hive}`,
@@ -1597,7 +1655,12 @@ async function telegramHandler(msg) {
         const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
         const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
         const oor = !p.in_range ? " ⚠️OOR" : "";
-        return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+        let slotTag = "";
+        if (config.slots.length > 1) {
+          const tracked = getTrackedPosition(p.position);
+          slotTag = ` [slot ${resolveSlotForPosition(tracked)}${tracked?.strategy ? ` · ${tracked.strategy}` : ""}]`;
+        }
+        return `${i + 1}. ${p.pair}${slotTag} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
       });
       await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
     } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
@@ -1821,7 +1884,7 @@ function fmtPct(value) {
   return Number.isFinite(n) ? `${n.toFixed(2)}%` : "?";
 }
 
-function getLoneCandidateSkipReason({ pool, sw, n, ti } = {}) {
+function getLoneCandidateSkipReason({ pool, sw, n, ti } = {}, screening = config.screening) {
   if (!pool) return "missing candidate data";
   const smartWalletCount = Math.max(sw?.in_pool?.length ?? 0, Number(pool.gmgn_smart_wallets ?? 0) || 0);
   const tokenInfo = ti || {};
@@ -1832,26 +1895,26 @@ function getLoneCandidateSkipReason({ pool, sw, n, ti } = {}) {
   if (pool.is_wash) return "wash trading was flagged";
   if (pool.is_rugpull && smartWalletCount === 0) return "rugpull risk was flagged and no smart wallets offset it";
   if (pool.is_pvp && smartWalletCount === 0) return "PVP symbol conflict and no smart-wallet confirmation";
-  if (Number.isFinite(globalFeesSol) && globalFeesSol < config.screening.minTokenFeesSol) {
-    return `token fees ${globalFeesSol} SOL below minimum ${config.screening.minTokenFeesSol} SOL`;
+  if (Number.isFinite(globalFeesSol) && globalFeesSol < screening.minTokenFeesSol) {
+    return `token fees ${globalFeesSol} SOL below minimum ${screening.minTokenFeesSol} SOL`;
   }
-  if (Number.isFinite(top10Pct) && top10Pct > config.screening.maxTop10Pct) {
-    return `top10 concentration ${top10Pct}% above maximum ${config.screening.maxTop10Pct}%`;
+  if (Number.isFinite(top10Pct) && top10Pct > screening.maxTop10Pct) {
+    return `top10 concentration ${top10Pct}% above maximum ${screening.maxTop10Pct}%`;
   }
-  if (Number.isFinite(botPct) && botPct > config.screening.maxBotHoldersPct) {
-    return `bot holders ${botPct}% above maximum ${config.screening.maxBotHoldersPct}%`;
+  if (Number.isFinite(botPct) && botPct > screening.maxBotHoldersPct) {
+    return `bot holders ${botPct}% above maximum ${screening.maxBotHoldersPct}%`;
   }
   if (!hasNarrative && smartWalletCount === 0) return "only candidate has no narrative and no smart-wallet confirmation";
   return null;
 }
 
-function computeBinsBelow(volatility) {
+function computeBinsBelow(volatility, slotStrategy = config.strategy) {
   const parsedVolatility = Number(volatility);
   if (!Number.isFinite(parsedVolatility) || parsedVolatility <= 0) {
     throw new Error(`Invalid volatility ${volatility ?? "unknown"} — refusing volatility-scaled deploy.`);
   }
-  const lo = config.strategy.minBinsBelow;
-  const hi = config.strategy.maxBinsBelow;
+  const lo = slotStrategy.minBinsBelow;
+  const hi = slotStrategy.maxBinsBelow;
   return Math.max(lo, Math.min(hi, Math.round(lo + (parsedVolatility / 5) * (hi - lo))));
 }
 

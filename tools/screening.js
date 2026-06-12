@@ -351,8 +351,9 @@ async function enrichPvpRisk(pools) {
  */
 export async function discoverPools({
   page_size = 50,
+  screening = config.screening,
 } = {}) {
-  const s = config.screening;
+  const s = screening;
   const filters = [
     "base_token_has_critical_warnings=false",
     "quote_token_has_critical_warnings=false",
@@ -426,7 +427,7 @@ export async function discoverPools({
 
   let rawPools = Array.from(merged.values());
 
-  if (config.screening.useDiscordSignals) {
+  if (s.useDiscordSignals) {
     const signalCandidates = await fetchDiscordSignalCandidates().catch((error) => {
       log("screening", `Discord signal fetch failed: ${error.message}`);
       return [];
@@ -446,7 +447,7 @@ export async function discoverPools({
       })
       .filter(Boolean);
 
-    if (config.screening.discordSignalMode === "only") {
+    if (s.discordSignalMode === "only") {
       rawPools = signalPools;
     } else if (signalPools.length > 0) {
       const byPool = new Map(rawPools.map((pool) => [pool.pool_address, pool]));
@@ -542,10 +543,11 @@ export async function discoverPools({
  * Returns eligible pools for the agent to evaluate and pick from.
  * Hard filters applied in code, agent decides which to deploy into.
  */
-export async function getTopCandidates({ limit = 10 } = {}) {
+export async function getTopCandidates({ limit = 10, screening = null } = {}) {
   const { config } = await import("../config.js");
-  const pageSize = Number(config.screening.poolPageSize ?? 100);
-  const discovery = await discoverPools({ page_size: pageSize });
+  const s = screening ?? config.screening;
+  const pageSize = Number(s.poolPageSize ?? 100);
+  const discovery = await discoverPools({ page_size: pageSize, screening: s });
   const { pools } = discovery;
   const filteredOut = Array.isArray(discovery.filtered_examples) ? [...discovery.filtered_examples] : [];
 
@@ -554,10 +556,10 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const { positions } = await getMyPositions();
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
-  const minTvl = Number(config.screening.minTvl ?? 0);
-  const maxTvl = config.screening.maxTvl == null ? null : Number(config.screening.maxTvl);
-  const minFeeActiveTvlRatio = Number(config.screening.minFeeActiveTvlRatio ?? 0);
-  const maxFeeActiveTvlRatio = config.screening.maxFeeActiveTvlRatio == null ? null : Number(config.screening.maxFeeActiveTvlRatio);
+  const minTvl = Number(s.minTvl ?? 0);
+  const maxTvl = s.maxTvl == null ? null : Number(s.maxTvl);
+  const minFeeActiveTvlRatio = Number(s.minFeeActiveTvlRatio ?? 0);
+  const maxFeeActiveTvlRatio = s.maxFeeActiveTvlRatio == null ? null : Number(s.maxFeeActiveTvlRatio);
 
   const eligible = pools
     .filter((p) => {
@@ -606,9 +608,9 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
     .slice(0, limit);
 
-  if (config.screening.avoidPvpSymbols && eligible.length > 0) {
+  if (s.avoidPvpSymbols && eligible.length > 0) {
     await enrichPvpRisk(eligible);
-    if (config.screening.blockPvpSymbols) {
+    if (s.blockPvpSymbols) {
       const before = eligible.length;
       const pvpRemoved = eligible.filter((p) => p.is_pvp);
       pvpRemoved.forEach((p) => pushFilteredReason(filteredOut, p, "PVP hard filter"));
@@ -687,7 +689,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     }));
 
     // ATH filter — drop pools where price is too close to ATH
-    const athFilter = config.screening.athFilterPct;
+    const athFilter = s.athFilterPct;
     if (athFilter != null) {
       const threshold = 100 + athFilter; // e.g. -20 → threshold = 80 (price must be <= 80% of ATH)
       const before = eligible.length;

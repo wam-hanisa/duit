@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
+const USER_CONFIG_2_PATH = path.join(__dirname, "user-config-2.json");
 const DEFAULT_HIVEMIND_URL = "https://api.agentmeridian.xyz";
 const DEFAULT_AGENT_MERIDIAN_API_URL = "https://api.agentmeridian.xyz/api";
 const DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY = "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz";
@@ -18,18 +19,6 @@ function numericConfig(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
-
-const legacyBinsBelow = numericConfig(u.binsBelow);
-const configuredMinBinsBelow = numericConfig(u.minBinsBelow) ?? MIN_SAFE_BINS_BELOW;
-const configuredMaxBinsBelow = numericConfig(u.maxBinsBelow)
-  ?? (legacyBinsBelow != null ? Math.max(legacyBinsBelow, configuredMinBinsBelow) : 69);
-const configuredDefaultBinsBelow = numericConfig(u.defaultBinsBelow) ?? legacyBinsBelow ?? configuredMaxBinsBelow;
-const strategyMinBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Math.round(configuredMinBinsBelow));
-const strategyMaxBinsBelow = Math.max(strategyMinBinsBelow, Math.round(configuredMaxBinsBelow));
-const strategyDefaultBinsBelow = Math.max(
-  strategyMinBinsBelow,
-  Math.min(strategyMaxBinsBelow, Math.round(configuredDefaultBinsBelow)),
-);
 
 // Apply wallet/RPC from user-config if not already in env
 if (u.rpcUrl)    process.env.RPC_URL            ||= u.rpcUrl;
@@ -52,6 +41,146 @@ function nonEmptyString(...values) {
   return null;
 }
 
+/**
+ * Build the per-slot config sections (screening / management / strategy) from a
+ * parsed user-config object. Called once for the primary config (slot 1) and
+ * once per additional slot file (e.g. user-config-2.json for slot 2). Keeping
+ * this a factory lets each slot run a different strategy + independent filters
+ * and exit rules while sharing the same construction logic.
+ */
+function buildSlotSections(uu) {
+  const legacyBinsBelow = numericConfig(uu.binsBelow);
+  const configuredMinBinsBelow = numericConfig(uu.minBinsBelow) ?? MIN_SAFE_BINS_BELOW;
+  const configuredMaxBinsBelow = numericConfig(uu.maxBinsBelow)
+    ?? (legacyBinsBelow != null ? Math.max(legacyBinsBelow, configuredMinBinsBelow) : 69);
+  const configuredDefaultBinsBelow = numericConfig(uu.defaultBinsBelow) ?? legacyBinsBelow ?? configuredMaxBinsBelow;
+  const strategyMinBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Math.round(configuredMinBinsBelow));
+  const strategyMaxBinsBelow = Math.max(strategyMinBinsBelow, Math.round(configuredMaxBinsBelow));
+  const strategyDefaultBinsBelow = Math.max(
+    strategyMinBinsBelow,
+    Math.min(strategyMaxBinsBelow, Math.round(configuredDefaultBinsBelow)),
+  );
+
+  return {
+    // ─── Pool Screening Thresholds ───────────
+    screening: {
+      excludeHighSupplyConcentration: uu.excludeHighSupplyConcentration ?? true,
+      minFeeActiveTvlRatio: uu.minFeeActiveTvlRatio ?? 0.05,
+      maxFeeActiveTvlRatio: uu.maxFeeActiveTvlRatio ?? null, // null = no cap; set to e.g. 2.0 to block extreme pump pools
+      maxVolatility: uu.maxVolatility ?? null, // null = no cap; pools with volatility above this are rejected (e.g. 5)
+      maxSingleHolderPct: uu.maxSingleHolderPct ?? null, // null = no cap; reject if any single non-pool holder owns more than this %
+      reentryAfterLossHours: uu.reentryAfterLossHours ?? 6, // normal-loss cooldown hours (smart-check window applies after reentryMinCooldownMin)
+      reentryMinCooldownMin: uu.reentryMinCooldownMin ?? 30, // hard minimum minutes before smart re-entry check kicks in
+      reentryAfterPumpMinutes: uu.reentryAfterPumpMinutes ?? 60, // block same pool re-entry for X minutes after a "pumped above" close
+      // Whale-dump-specific cooldowns (data-driven: <6h re-entries failed 100%, 12h+ won 67%)
+      whaleDumpCooldownHours: uu.whaleDumpCooldownHours ?? 12, // base cooldown for any whale-dump close
+      whaleDumpEscalationHours: uu.whaleDumpEscalationHours ?? 48, // applied when 2+ consecutive whale dumps in same pool
+      whaleDumpBlacklistCount: uu.whaleDumpBlacklistCount ?? 3, // refuse deploy entirely after this many consecutive whale dumps
+      whaleDumpTotalCount:    uu.whaleDumpTotalCount    ?? 3,   // refuse if TOTAL whale dumps (not just consecutive) in window hits this — catches periodic dumpers
+      whaleDumpTotalWindowHours: uu.whaleDumpTotalWindowHours ?? 168, // rolling window (7d) for the total-dump-count check
+      toxicTokenMinDeploys:   uu.toxicTokenMinDeploys   ?? 3,   // min deploys before the cumulative-PnL toxic check applies
+      toxicTokenMaxNetUsd:    uu.toxicTokenMaxNetUsd    ?? -8,  // refuse a mint whose net realized PnL across all its pools is <= this
+      minTvl:            uu.minTvl            ?? 10_000,
+      maxTvl:            uu.maxTvl !== undefined ? uu.maxTvl : 150_000,
+      minVolume:         uu.minVolume         ?? 500,
+      minOrganic:        uu.minOrganic        ?? 60,
+      minQuoteOrganic:   uu.minQuoteOrganic   ?? 60,
+      minHolders:        uu.minHolders        ?? 500,
+      minMcap:           uu.minMcap           ?? 150_000,
+      maxMcap:           uu.maxMcap           ?? 10_000_000,
+      minBinStep:        uu.minBinStep        ?? 80,
+      maxBinStep:        uu.maxBinStep        ?? 125,
+      timeframe:         uu.timeframe         ?? "5m",
+      category:          uu.category          ?? "trending",
+      secondaryCategory: uu.secondaryCategory ?? null, // optional 2nd Meteora category (e.g. "volume") merged with primary for more candidate variety
+      extraCategories:   uu.extraCategories   ?? [],   // additional Meteora categories array, e.g. ["new","top"] — all are deduped + merged
+      poolPageSize:      uu.poolPageSize      ?? 100,  // Meteora API page_size per category (was 50; raise for broader fetch)
+      minTokenFeesSol:   uu.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
+      useDiscordSignals: uu.useDiscordSignals ?? false,
+      discordSignalMode: uu.discordSignalMode ?? "merge", // merge | only
+      avoidPvpSymbols:   uu.avoidPvpSymbols   ?? true, // avoid exact-symbol rivals with real active pools
+      blockPvpSymbols:   uu.blockPvpSymbols   ?? false, // hard-filter PVP rivals before the LLM sees them
+      maxBundlePct:      uu.maxBundlePct      ?? 30,  // max bundle holding % (OKX advanced-info)
+      maxBotHoldersPct:  uu.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
+      maxTop10Pct:       uu.maxTop10Pct       ?? 60,  // max top 10 holders concentration
+      allowedLaunchpads: uu.allowedLaunchpads ?? [],  // allow-list launchpads, [] = no allow-list
+      blockedLaunchpads:  uu.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
+      minTokenAgeHours:   uu.minTokenAgeHours   ?? null, // null = no minimum
+      maxTokenAgeHours:   uu.maxTokenAgeHours   ?? null, // null = no maximum
+      athFilterPct:       uu.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
+    },
+
+    // ─── Position Management ────────────────
+    management: {
+      minClaimAmount:        uu.minClaimAmount        ?? 5,
+      autoSwapAfterClaim:    uu.autoSwapAfterClaim    ?? false,
+      evolveThresholdsEnabled: uu.evolveThresholdsEnabled ?? false, // OFF: respect manual tuning. ON: auto-evolve screening thresholds every 5 closes
+      deterministicScreening: uu.deterministicScreening ?? false, // ON: deploy top-scored safe candidate without the LLM (skips LLM cost/retry loops)
+      outOfRangeBinsToClose: uu.outOfRangeBinsToClose ?? 10,
+      outOfRangeWaitMinutes: uu.outOfRangeWaitMinutes ?? 30,
+      minProfitToCloseOorPct: uu.minProfitToCloseOorPct ?? 0, // don't OOR-close a profitable position below this % (fees > profit); 0 = disabled
+      maxOorHoldMinutes:     uu.maxOorHoldMinutes     ?? 45, // hard cap: OOR-close regardless of the min-profit gate after this long (frees the position slot)
+      oorCooldownTriggerCount: uu.oorCooldownTriggerCount ?? 3,
+      oorCooldownHours:       uu.oorCooldownHours       ?? 12,
+      repeatDeployCooldownEnabled: uu.repeatDeployCooldownEnabled ?? true,
+      repeatDeployCooldownTriggerCount: uu.repeatDeployCooldownTriggerCount ?? 3,
+      repeatDeployCooldownHours: uu.repeatDeployCooldownHours ?? 12,
+      repeatDeployCooldownScope: uu.repeatDeployCooldownScope ?? "token", // pool | token | both
+      repeatDeployCooldownMinFeeEarnedPct: uu.repeatDeployCooldownMinFeeEarnedPct ?? uu.repeatDeployCooldownMinFeeYieldPct ?? 0,
+      minVolumeToRebalance:  uu.minVolumeToRebalance  ?? 1000,
+      stopLossPct:           uu.stopLossPct           ?? uu.emergencyPriceDropPct ?? -50,
+      takeProfitPct:         uu.takeProfitPct         ?? uu.takeProfitFeePct ?? 5,
+      minFeePerTvl24h:       uu.minFeePerTvl24h       ?? 7,
+      minAgeBeforeYieldCheck: uu.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+      minSolToOpen:          uu.minSolToOpen          ?? 0.55,
+      deployAmountSol:       uu.deployAmountSol       ?? 0.5,
+      gasReserve:            uu.gasReserve            ?? 0.2,
+      positionSizePct:       uu.positionSizePct       ?? 0.35,
+      // Trailing take-profit
+      trailingTakeProfit:    uu.trailingTakeProfit    ?? true,
+      trailingTriggerPct:    uu.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
+      trailingDropPct:       uu.trailingDropPct       ?? 1.5,  // close when drops X% from peak
+      // Break-even exit — close when PnL recovers after prolonged negative period
+      breakEvenExitEnabled:         uu.breakEvenExitEnabled         ?? false,
+      breakEvenExitPct:             uu.breakEvenExitPct             ?? 1,    // close when PnL reaches this % (e.g. 1 = +1%)
+      breakEvenMinAge:              uu.breakEvenMinAge              ?? 30,   // position must be at least X minutes old
+      breakEvenMinNegativeMinutes:  uu.breakEvenMinNegativeMinutes  ?? 15,   // must have been negative for at least X minutes
+      // Whale watch — detect whale dumps and close before big IL
+      whaleWatchEnabled:            uu.whaleWatchEnabled            ?? false,
+      whaleDumpScoreThreshold:      uu.whaleDumpScoreThreshold      ?? 3,    // total score >= this triggers close
+      whaleHolderBigDropPct:        uu.whaleHolderBigDropPct        ?? 5,    // big drop = whale moving large supply (+3 score)
+      whaleHolderSmallDropPct:      uu.whaleHolderSmallDropPct      ?? 3,    // small drop on any top10 holder (+1 score)
+      whaleFastDropPct:             uu.whaleFastDropPct             ?? 3,    // PnL drop in 30s window (+2 score)
+      whaleCrashDropPct:            uu.whaleCrashDropPct            ?? 6,    // PnL crash in 30s window (+3 score)
+      whaleTvlDropPct:              uu.whaleTvlDropPct              ?? 10,   // pool TVL drop in 30s window (+1 score)
+      whaleDeclineStreakCount:      uu.whaleDeclineStreakCount      ?? 3,    // consecutive declining 30s polls → slow-grind dump warning (+2 score); 0 = off
+      whaleDeclineStreakMinDropPct: uu.whaleDeclineStreakMinDropPct ?? 2,    // cumulative drop over the streak required to fire
+      // Smart-wallet auto-maintenance — auto-add high performers, auto-remove inactive
+      smartWalletAutoAddEnabled:    uu.smartWalletAutoAddEnabled    ?? false,
+      smartWalletAutoRemoveEnabled: uu.smartWalletAutoRemoveEnabled ?? false,
+      smartWalletMinWinRate:        uu.smartWalletMinWinRate        ?? 0.6,  // LPer must have >=60% win rate to auto-add
+      smartWalletMinRoi:            uu.smartWalletMinRoi            ?? 0.1,  // LPer must have >=10% ROI to auto-add
+      smartWalletMaxTotal:          uu.smartWalletMaxTotal          ?? 50,   // cap on total tracked wallets
+      smartWalletMaxAddsPerCycle:   uu.smartWalletMaxAddsPerCycle   ?? 2,    // max wallets to add per profitable close
+      smartWalletInactivityDays:    uu.smartWalletInactivityDays    ?? 30,   // remove if no positions for X days
+      smartWalletPruneIntervalHrs:  uu.smartWalletPruneIntervalHrs  ?? 24,   // run prune cron every X hours
+      pnlSanityMaxDiffPct:   uu.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
+      // SOL mode — positions, PnL, and balances reported in SOL instead of USD
+      solMode:               uu.solMode               ?? false,
+    },
+
+    // ─── Strategy Mapping ───────────────────
+    strategy: {
+      strategy:     uu.strategy     ?? "bid_ask",
+      minBinsBelow: strategyMinBinsBelow,
+      maxBinsBelow: strategyMaxBinsBelow,
+      defaultBinsBelow: strategyDefaultBinsBelow,
+    },
+  };
+}
+
+const __slot1 = buildSlotSections(u);
+
 export const config = {
   // ─── Risk Limits ─────────────────────────
   risk: {
@@ -59,120 +188,14 @@ export const config = {
     maxDeployAmount: u.maxDeployAmount ?? 50,
   },
 
-  // ─── Pool Screening Thresholds ───────────
-  screening: {
-    excludeHighSupplyConcentration: u.excludeHighSupplyConcentration ?? true,
-    minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? 0.05,
-    maxFeeActiveTvlRatio: u.maxFeeActiveTvlRatio ?? null, // null = no cap; set to e.g. 2.0 to block extreme pump pools
-    maxVolatility: u.maxVolatility ?? null, // null = no cap; pools with volatility above this are rejected (e.g. 5)
-    maxSingleHolderPct: u.maxSingleHolderPct ?? null, // null = no cap; reject if any single non-pool holder owns more than this %
-    reentryAfterLossHours: u.reentryAfterLossHours ?? 6, // normal-loss cooldown hours (smart-check window applies after reentryMinCooldownMin)
-    reentryMinCooldownMin: u.reentryMinCooldownMin ?? 30, // hard minimum minutes before smart re-entry check kicks in
-    reentryAfterPumpMinutes: u.reentryAfterPumpMinutes ?? 60, // block same pool re-entry for X minutes after a "pumped above" close
-    // Whale-dump-specific cooldowns (data-driven: <6h re-entries failed 100%, 12h+ won 67%)
-    whaleDumpCooldownHours: u.whaleDumpCooldownHours ?? 12, // base cooldown for any whale-dump close
-    whaleDumpEscalationHours: u.whaleDumpEscalationHours ?? 48, // applied when 2+ consecutive whale dumps in same pool
-    whaleDumpBlacklistCount: u.whaleDumpBlacklistCount ?? 3, // refuse deploy entirely after this many consecutive whale dumps
-    whaleDumpTotalCount:    u.whaleDumpTotalCount    ?? 3,   // refuse if TOTAL whale dumps (not just consecutive) in window hits this — catches periodic dumpers
-    whaleDumpTotalWindowHours: u.whaleDumpTotalWindowHours ?? 168, // rolling window (7d) for the total-dump-count check
-    toxicTokenMinDeploys:   u.toxicTokenMinDeploys   ?? 3,   // min deploys before the cumulative-PnL toxic check applies
-    toxicTokenMaxNetUsd:    u.toxicTokenMaxNetUsd    ?? -8,  // refuse a mint whose net realized PnL across all its pools is <= this
-    minTvl:            u.minTvl            ?? 10_000,
-    maxTvl:            u.maxTvl !== undefined ? u.maxTvl : 150_000,
-    minVolume:         u.minVolume         ?? 500,
-    minOrganic:        u.minOrganic        ?? 60,
-    minQuoteOrganic:   u.minQuoteOrganic   ?? 60,
-    minHolders:        u.minHolders        ?? 500,
-    minMcap:           u.minMcap           ?? 150_000,
-    maxMcap:           u.maxMcap           ?? 10_000_000,
-    minBinStep:        u.minBinStep        ?? 80,
-    maxBinStep:        u.maxBinStep        ?? 125,
-    timeframe:         u.timeframe         ?? "5m",
-    category:          u.category          ?? "trending",
-    secondaryCategory: u.secondaryCategory ?? null, // optional 2nd Meteora category (e.g. "volume") merged with primary for more candidate variety
-    extraCategories:   u.extraCategories   ?? [],   // additional Meteora categories array, e.g. ["new","top"] — all are deduped + merged
-    poolPageSize:      u.poolPageSize      ?? 100,  // Meteora API page_size per category (was 50; raise for broader fetch)
-    minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
-    useDiscordSignals: u.useDiscordSignals ?? false,
-    discordSignalMode: u.discordSignalMode ?? "merge", // merge | only
-    avoidPvpSymbols:   u.avoidPvpSymbols   ?? true, // avoid exact-symbol rivals with real active pools
-    blockPvpSymbols:   u.blockPvpSymbols   ?? false, // hard-filter PVP rivals before the LLM sees them
-    maxBundlePct:      u.maxBundlePct      ?? 30,  // max bundle holding % (OKX advanced-info)
-    maxBotHoldersPct:  u.maxBotHoldersPct  ?? 30,  // max bot holder addresses % (Jupiter audit)
-    maxTop10Pct:       u.maxTop10Pct       ?? 60,  // max top 10 holders concentration
-    allowedLaunchpads: u.allowedLaunchpads ?? [],  // allow-list launchpads, [] = no allow-list
-    blockedLaunchpads:  u.blockedLaunchpads  ?? [],  // e.g. ["letsbonk.fun", "pump.fun"]
-    minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
-    maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
-    athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
-  },
+  // ─── Pool Screening Thresholds (slot 1) ───
+  screening: __slot1.screening,
 
-  // ─── Position Management ────────────────
-  management: {
-    minClaimAmount:        u.minClaimAmount        ?? 5,
-    autoSwapAfterClaim:    u.autoSwapAfterClaim    ?? false,
-    evolveThresholdsEnabled: u.evolveThresholdsEnabled ?? false, // OFF: respect manual tuning. ON: auto-evolve screening thresholds every 5 closes
-    deterministicScreening: u.deterministicScreening ?? false, // ON: deploy top-scored safe candidate without the LLM (skips LLM cost/retry loops)
-    outOfRangeBinsToClose: u.outOfRangeBinsToClose ?? 10,
-    outOfRangeWaitMinutes: u.outOfRangeWaitMinutes ?? 30,
-    minProfitToCloseOorPct: u.minProfitToCloseOorPct ?? 0, // don't OOR-close a profitable position below this % (fees > profit); 0 = disabled
-    maxOorHoldMinutes:     u.maxOorHoldMinutes     ?? 45, // hard cap: OOR-close regardless of the min-profit gate after this long (frees the position slot)
-    oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
-    oorCooldownHours:       u.oorCooldownHours       ?? 12,
-    repeatDeployCooldownEnabled: u.repeatDeployCooldownEnabled ?? true,
-    repeatDeployCooldownTriggerCount: u.repeatDeployCooldownTriggerCount ?? 3,
-    repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
-    repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
-    repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
-    minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
-    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
-    takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
-    minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
-    minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
-    minSolToOpen:          u.minSolToOpen          ?? 0.55,
-    deployAmountSol:       u.deployAmountSol       ?? 0.5,
-    gasReserve:            u.gasReserve            ?? 0.2,
-    positionSizePct:       u.positionSizePct       ?? 0.35,
-    // Trailing take-profit
-    trailingTakeProfit:    u.trailingTakeProfit    ?? true,
-    trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
-    trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
-    // Break-even exit — close when PnL recovers after prolonged negative period
-    breakEvenExitEnabled:         u.breakEvenExitEnabled         ?? false,
-    breakEvenExitPct:             u.breakEvenExitPct             ?? 1,    // close when PnL reaches this % (e.g. 1 = +1%)
-    breakEvenMinAge:              u.breakEvenMinAge              ?? 30,   // position must be at least X minutes old
-    breakEvenMinNegativeMinutes:  u.breakEvenMinNegativeMinutes  ?? 15,   // must have been negative for at least X minutes
-    // Whale watch — detect whale dumps and close before big IL
-    whaleWatchEnabled:            u.whaleWatchEnabled            ?? false,
-    whaleDumpScoreThreshold:      u.whaleDumpScoreThreshold      ?? 3,    // total score >= this triggers close
-    whaleHolderBigDropPct:        u.whaleHolderBigDropPct        ?? 5,    // big drop = whale moving large supply (+3 score)
-    whaleHolderSmallDropPct:      u.whaleHolderSmallDropPct      ?? 3,    // small drop on any top10 holder (+1 score)
-    whaleFastDropPct:             u.whaleFastDropPct             ?? 3,    // PnL drop in 30s window (+2 score)
-    whaleCrashDropPct:            u.whaleCrashDropPct            ?? 6,    // PnL crash in 30s window (+3 score)
-    whaleTvlDropPct:              u.whaleTvlDropPct              ?? 10,   // pool TVL drop in 30s window (+1 score)
-    whaleDeclineStreakCount:      u.whaleDeclineStreakCount      ?? 3,    // consecutive declining 30s polls → slow-grind dump warning (+2 score); 0 = off
-    whaleDeclineStreakMinDropPct: u.whaleDeclineStreakMinDropPct ?? 2,    // cumulative drop over the streak required to fire
-    // Smart-wallet auto-maintenance — auto-add high performers, auto-remove inactive
-    smartWalletAutoAddEnabled:    u.smartWalletAutoAddEnabled    ?? false,
-    smartWalletAutoRemoveEnabled: u.smartWalletAutoRemoveEnabled ?? false,
-    smartWalletMinWinRate:        u.smartWalletMinWinRate        ?? 0.6,  // LPer must have >=60% win rate to auto-add
-    smartWalletMinRoi:            u.smartWalletMinRoi            ?? 0.1,  // LPer must have >=10% ROI to auto-add
-    smartWalletMaxTotal:          u.smartWalletMaxTotal          ?? 50,   // cap on total tracked wallets
-    smartWalletMaxAddsPerCycle:   u.smartWalletMaxAddsPerCycle   ?? 2,    // max wallets to add per profitable close
-    smartWalletInactivityDays:    u.smartWalletInactivityDays    ?? 30,   // remove if no positions for X days
-    smartWalletPruneIntervalHrs:  u.smartWalletPruneIntervalHrs  ?? 24,   // run prune cron every X hours
-    pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
-    // SOL mode — positions, PnL, and balances reported in SOL instead of USD
-    solMode:               u.solMode               ?? false,
-  },
+  // ─── Position Management (slot 1) ─────────
+  management: __slot1.management,
 
-  // ─── Strategy Mapping ───────────────────
-  strategy: {
-    strategy:     u.strategy     ?? "bid_ask",
-    minBinsBelow: strategyMinBinsBelow,
-    maxBinsBelow: strategyMaxBinsBelow,
-    defaultBinsBelow: strategyDefaultBinsBelow,
-  },
+  // ─── Strategy Mapping (slot 1) ────────────
+  strategy: __slot1.strategy,
 
   // ─── Scheduling ─────────────────────────
   schedule: {
@@ -252,6 +275,50 @@ export const config = {
   },
 };
 
+// ─── Multi-Slot Config ──────────────────────────────────────────────
+// Each slot is one concurrent position with its own strategy + filters +
+// exit rules. Slot 1 is the primary user-config.json and references the live
+// config.screening/management/strategy objects BY REFERENCE — this is what
+// keeps update_config + reloadScreeningThresholds working on slot 1. Slot 2
+// (optional) is built from user-config-2.json. If that file is absent there is
+// exactly one slot and every slot-aware code path collapses to legacy behavior.
+const u2 = fs.existsSync(USER_CONFIG_2_PATH)
+  ? JSON.parse(fs.readFileSync(USER_CONFIG_2_PATH, "utf8"))
+  : null;
+
+config.slots = [
+  { id: 1, screening: config.screening, management: config.management, strategy: config.strategy },
+];
+
+if (u2) {
+  const slot2 = buildSlotSections(u2);
+  config.slots.push({ id: 2, screening: slot2.screening, management: slot2.management, strategy: slot2.strategy });
+  // Global hard cap = number of slots (executor backstop). Each slot is gated to
+  // 1 position by the per-slot occupancy check in index.js.
+  config.risk.maxPositions = config.slots.length;
+}
+
+/**
+ * Resolve a slot's full config block by slot id. Unknown/null id falls back to
+ * slot 1 — the single back-compat choke point for legacy callers.
+ */
+export function resolveSlotConfig(slotId) {
+  return config.slots.find((s) => s.id === slotId) ?? config.slots[0];
+}
+
+/**
+ * Resolve the slot id for a tracked position record. Orphan/pre-existing
+ * positions with no slot tag default to slot 1.
+ */
+export function resolveSlotForPosition(trackedPos) {
+  return trackedPos?.slot ?? 1;
+}
+
+/** Number of configured slots (1 when user-config-2.json is absent). */
+export function slotCount() {
+  return config.slots.length;
+}
+
 /**
  * Compute the optimal deploy amount for a given wallet balance.
  * Scales position size with wallet growth (compounding).
@@ -263,11 +330,14 @@ export const config = {
  *   2.0 SOL wallet → 0.63 SOL deploy
  *   3.0 SOL wallet → 0.98 SOL deploy
  *   4.0 SOL wallet → 1.33 SOL deploy
+ *
+ * @param {number} walletSol   Available SOL balance.
+ * @param {object} [slotMgmt]  Per-slot management config (defaults to slot 1's).
  */
-export function computeDeployAmount(walletSol) {
-  const reserve  = config.management.gasReserve      ?? 0.2;
-  const pct      = config.management.positionSizePct ?? 0.35;
-  const floor    = config.management.deployAmountSol;
+export function computeDeployAmount(walletSol, slotMgmt = config.management) {
+  const reserve  = slotMgmt.gasReserve      ?? 0.2;
+  const pct      = slotMgmt.positionSizePct ?? 0.35;
+  const floor    = slotMgmt.deployAmountSol;
   const ceil     = config.risk.maxDeployAmount;
   const deployable = Math.max(0, walletSol - reserve);
   const dynamic    = deployable * pct;
@@ -279,6 +349,9 @@ export function computeDeployAmount(walletSol) {
  * Reload user-config.json and apply updated screening thresholds to the
  * in-memory config object. Called after threshold evolution so the next
  * agent cycle uses the evolved values without a restart.
+ *
+ * NOTE: this only refreshes slot 1 (the primary user-config.json). Slot 2 has
+ * no live-reload path — auto-evolve is OFF by default, so this is acceptable.
  */
 export function reloadScreeningThresholds() {
   try {

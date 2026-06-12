@@ -9,6 +9,7 @@ node_modules/
 
 # User config (contains RPC URL, wallet key, API keys)
 user-config.json
+user-config-2.json
 
 # Runtime state (position tracking, lessons — user-specific)
 state.json

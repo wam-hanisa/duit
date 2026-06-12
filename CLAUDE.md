@@ -679,6 +679,27 @@ A yield-triggered fast management variant lives in `C:\Data\Duit\duit-cepat\`. K
 
 ---
 
+## Multi-Slot Architecture (June 2026)
+
+One process can now run **two concurrent positions with different strategies + independent settings** ("slots"), all in one Telegram chat:
+
+- **Slot 1 — SPOT** — driven by `user-config.json` (unchanged).
+- **Slot 2 — BID-ASK** — driven by `user-config-2.json` (per-slot keys only: screening + management + strategy; global keys like LLM/telegram/schedule are ignored there). Gitignored like slot 1's config — sync via FileZilla, `pm2 restart` to apply.
+- **Backward compatible**: if `user-config-2.json` is absent, `config.slots.length === 1` and every code path collapses to legacy single-slot behavior (the screening gate then uses the old `total_positions >= maxPositions` count, honoring a user-set `maxPositions > 1`).
+
+How it works:
+- `config.js` builds `config.slots[]` via `buildSlotSections()`. **Slot 1 references `config.screening/management/strategy` by identity** — so `update_config` + `reloadScreeningThresholds()` keep affecting slot 1 live. Slot 2 has NO live-reload path (file edit + restart only). When slot 2 exists, `config.risk.maxPositions` is forced to the slot count (executor backstop).
+- Helpers: `resolveSlotConfig(slotId)` (unknown → slot 1), `resolveSlotForPosition(tracked)` (orphan/pre-existing positions → slot 1), `slotCount()`.
+- **State**: `trackPosition` records a `slot` field per position; on-chain positions join to tracked records by address.
+- **Screening**: `runScreeningCycle()` is an orchestrator — computes empty slots (occupancy join), screens each **sequentially** under one busy-guard, re-fetching balance between slots. `screenSlot(slot)` threads `slot.screening/management/strategy` through `getTopCandidates({screening})`, `computeBinsBelow(vol, slotStrategy)`, `computeDeployAmount(sol, slotMgmt)`, the LLM prompt (`agentLoop options.slot` → `buildSystemPrompt(..., slot)`), and the deploy args. `agent.js` force-overrides `deploy_position.strategy` to the slot's strategy so the LLM can't deploy the wrong distribution.
+- **Management**: each position's exit rules resolve from ITS slot — `updatePnlAndCheckExits`, `getDeterministicCloseRule`, claim threshold, OOR wait, trailing confirm, and whale-watch all take the per-position `slotMgmt` (management cycle + 30s poller + trailing-drop scheduler).
+- **Executor safety**: `validateDeployPoolThresholds` + bin-step/vol/sizing checks use `resolveSlotConfig(args.slot)`. Duplicate pool/mint guards prevent both slots picking the same token. Telegram deploy/close notifications and `/positions`/`/status` show `slot N · strategy` tags (only when 2 slots exist).
+- **Shared on purpose**: pool-memory cooldowns, token blacklist, smart wallets, Darwin weights — a pool that burned slot 1 stays on cooldown for slot 2.
+
+Capital note: with ~1.5 SOL and `deployAmountSol: 0.6` per slot, both positions fit (0.6+0.6+~0.15 gas ≈ 1.35).
+
+---
+
 ## Recent Fixes (May 19-27, 2026)
 
 ### ✅ Fixed

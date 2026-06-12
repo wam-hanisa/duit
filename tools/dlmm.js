@@ -11,7 +11,7 @@ import {
 } from "@solana/web3.js";
 import BN from "bn.js";
 import bs58 from "bs58";
-import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
+import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW, resolveSlotConfig } from "../config.js";
 import { log } from "../logger.js";
 import {
   trackPosition,
@@ -454,6 +454,7 @@ export async function deployPosition({
   amount_x,
   amount_y,
   strategy,
+  slot = 1,
   bins_below,
   bins_above,
   downside_pct,
@@ -468,8 +469,11 @@ export async function deployPosition({
   initial_value_usd,
 }) {
   pool_address = normalizeMint(pool_address);
-  const activeStrategy = strategy || config.strategy.strategy;
-  let activeBinsBelow = bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow;
+  // Resolve this deploy's slot strategy so strategy/bins fallbacks use the
+  // correct slot (e.g. slot 2 = bid_ask) when the caller omits them.
+  const slotStrategy = resolveSlotConfig(slot).strategy;
+  const activeStrategy = strategy || slotStrategy.strategy;
+  let activeBinsBelow = bins_below ?? slotStrategy.defaultBinsBelow ?? slotStrategy.minBinsBelow;
   let activeBinsAbove = bins_above ?? 0;
   const parsedVolatility = volatility == null ? null : Number(volatility);
   const normalizedVolatility = parsedVolatility != null && Number.isFinite(parsedVolatility) ? parsedVolatility : null;
@@ -562,7 +566,7 @@ export async function deployPosition({
   if (!Number.isInteger(activeBinsBelow) || !Number.isInteger(activeBinsAbove)) {
     throw new Error("Invalid bin range: bins_below and bins_above must be whole-bin integers.");
   }
-  const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
+  const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(slotStrategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
   const totalBins = activeBinsBelow + activeBinsAbove;
   if (totalBins < minBinsBelow) {
     throw new Error(
@@ -692,6 +696,7 @@ export async function deployPosition({
           pool: pool_address,
           pool_name,
           strategy: activeStrategy,
+          slot,
           bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
           bin_step,
           volatility: normalizedVolatility,
@@ -830,6 +835,7 @@ export async function deployPosition({
       pool: pool_address,
       pool_name,
       strategy: activeStrategy,
+      slot,
       bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
       bin_step,
       volatility: normalizedVolatility,

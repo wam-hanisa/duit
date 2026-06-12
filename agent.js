@@ -150,7 +150,7 @@ function isToolChoiceRequiredError(error) {
  * @returns {string} - The agent's final text response
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
-  const { interactive = false, onToolStart = null, onToolFinish = null } = options;
+  const { interactive = false, onToolStart = null, onToolFinish = null, slot = null } = options;
   // Build dynamic system prompt with current portfolio state
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();
@@ -165,7 +165,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
     } catch { /* signal-weights not critical */ }
   }
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary, slot);
 
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
@@ -355,6 +355,14 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           };
         }
 
+        // Tag LLM-initiated deploys with the active screening slot so the
+        // position is tracked under (and validated against) the right slot,
+        // and FORCE the slot's strategy so the LLM can't deploy the wrong
+        // distribution (e.g. slot 2 must be bid_ask, not spot).
+        if (functionName === "deploy_position" && slot?.id != null) {
+          if (functionArgs.slot == null) functionArgs.slot = slot.id;
+          if (slot.strategy?.strategy) functionArgs.strategy = slot.strategy.strategy;
+        }
         await onToolStart?.({ name: functionName, args: functionArgs, step });
         const result = await executeTool(functionName, functionArgs);
         await onToolFinish?.({
