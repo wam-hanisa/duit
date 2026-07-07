@@ -382,15 +382,19 @@ WARNING: This executes a real on-chain transaction.`,
     function: {
       name: "update_config",
       description: `Update any of your operating parameters at runtime.
-Changes persist to user-config.json and take effect immediately — no restart needed.
+Changes persist to the config file and take effect immediately — no restart needed.
 
 VALID KEYS (use EXACTLY these key names, nothing else):
-Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minQuoteOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, timeframe, category, minTokenFeesSol, excludeHighSupplyConcentration, allowedLaunchpads, blockedLaunchpads
-Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, oorCooldownTriggerCount, oorCooldownHours, repeatDeployCooldownEnabled, repeatDeployCooldownTriggerCount, repeatDeployCooldownHours, repeatDeployCooldownScope, repeatDeployCooldownMinFeeEarnedPct, minVolumeToRebalance, stopLossPct, takeProfitPct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct
-Risk: maxPositions, maxDeployAmount
-Schedule: managementIntervalMin, screeningIntervalMin
-Models: managementModel, screeningModel, generalModel
-Strategy: minBinsBelow, maxBinsBelow, defaultBinsBelow (legacy binsBelow maps to maxBinsBelow)
+Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minQuoteOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, maxVolatility, maxSingleHolderPct, timeframe, category, minTokenFeesSol, excludeHighSupplyConcentration, allowedLaunchpads, blockedLaunchpads
+Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, oorCooldownTriggerCount, oorCooldownHours, repeatDeployCooldownEnabled, repeatDeployCooldownTriggerCount, repeatDeployCooldownHours, repeatDeployCooldownScope, repeatDeployCooldownMinFeeEarnedPct, minVolumeToRebalance, stopLossPct, takeProfitPct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct, whaleWatchEnabled, whaleDumpScoreThreshold, whaleHolderBigDropPct, whaleHolderSmallDropPct, whaleFastDropPct, whaleCrashDropPct, whaleTvlDropPct, whaleDeclineStreakCount, whaleDeclineStreakMinDropPct
+Risk (global — shared by every slot): maxPositions, maxDeployAmount
+Schedule (global): managementIntervalMin, screeningIntervalMin
+Models (global): managementModel, screeningModel, generalModel
+Strategy: strategy (spot | bid_ask), minBinsBelow, maxBinsBelow, defaultBinsBelow (legacy binsBelow maps to maxBinsBelow)
+
+SLOTS: If this agent runs 2 slots (2 concurrent positions with different strategies), pass "slot": 1 or "slot": 2
+to target that slot's Screening/Management/Strategy keys. Defaults to slot 1. Risk/Schedule/Models keys are
+global — the slot value is ignored for those, there is only one shared setting.
 
 Reason is optional but helpful — logged as a lesson when provided.`,
       parameters: {
@@ -399,6 +403,10 @@ Reason is optional but helpful — logged as a lesson when provided.`,
           changes: {
             type: "object",
             description: "Key-value pairs of settings to update. e.g. { \"takeProfitPct\": 8 }"
+          },
+          slot: {
+            type: "integer",
+            description: "Which slot's Screening/Management/Strategy config to update (1 or 2). Defaults to 1. Ignored for global keys (risk/schedule/models)."
           },
           reason: {
             type: "string",

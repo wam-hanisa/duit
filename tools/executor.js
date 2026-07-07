@@ -29,6 +29,12 @@ import { execSync, spawn } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
+const USER_CONFIG_2_PATH = path.join(__dirname, "../user-config-2.json");
+// Slot id -> config file. Extend this if a 3rd slot is ever added.
+const SLOT_FILE_PATHS = { 1: USER_CONFIG_PATH, 2: USER_CONFIG_2_PATH };
+// Sections that are independent per slot. Everything else (risk/schedule/llm/
+// hiveMind/api/indicators) is a single global value shared by all slots.
+const PER_SLOT_SECTIONS = new Set(["screening", "management", "strategy"]);
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
 const MIN_VOLATILITY_TIMEFRAME = "30m";
 const TIMEFRAME_MINUTES = {
@@ -356,7 +362,7 @@ const toolMap = {
     }
     return { error: "invalid mode" };
   },
-  update_config: ({ changes, reason = "" }) => {
+  update_config: ({ changes, reason = "", slot = 1 }) => {
     // Flat key → config section mapping (covers everything in config.js)
     const CONFIG_MAP = {
       // screening
@@ -387,6 +393,8 @@ const toolMap = {
       minTokenAgeHours: ["screening", "minTokenAgeHours"],
       maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
       athFilterPct:     ["screening", "athFilterPct"],
+      maxVolatility: ["screening", "maxVolatility"],
+      maxSingleHolderPct: ["screening", "maxSingleHolderPct"],
       minFeePerTvl24h: ["management", "minFeePerTvl24h"],
       // management
       minClaimAmount: ["management", "minClaimAmount"],
@@ -419,6 +427,8 @@ const toolMap = {
       whaleFastDropPct: ["management", "whaleFastDropPct"],
       whaleCrashDropPct: ["management", "whaleCrashDropPct"],
       whaleTvlDropPct: ["management", "whaleTvlDropPct"],
+      whaleDeclineStreakCount: ["management", "whaleDeclineStreakCount"],
+      whaleDeclineStreakMinDropPct: ["management", "whaleDeclineStreakMinDropPct"],
       smartWalletAutoAddEnabled: ["management", "smartWalletAutoAddEnabled"],
       smartWalletAutoRemoveEnabled: ["management", "smartWalletAutoRemoveEnabled"],
       smartWalletMinWinRate: ["management", "smartWalletMinWinRate"],
@@ -474,6 +484,19 @@ const toolMap = {
       requireAllIntervals: ["indicators", "requireAllIntervals", ["chartIndicators", "requireAllIntervals"]],
     };
 
+    // Resolve + validate the requested slot BEFORE touching anything. Unknown
+    // slot ids must hard-fail, not silently fall back to slot 1 (that's what
+    // resolveSlotConfig does for read paths — wrong behavior for a write path).
+    const requestedSlot = Number(slot) || 1;
+    const slotCfg = config.slots.find((s) => s.id === requestedSlot);
+    if (!slotCfg) {
+      return {
+        success: false,
+        error: `Slot ${requestedSlot} is not configured. Active slots: ${config.slots.map((s) => s.id).join(", ")}`,
+        reason,
+      };
+    }
+
     const applied = {};
     const unknown = [];
 
@@ -508,25 +531,44 @@ const toolMap = {
     }
 
     if (Object.keys(applied).length === 0) {
-      log("config", `update_config failed — unknown keys: ${JSON.stringify(unknown)}, raw changes: ${JSON.stringify(changes)}`);
+      log("config", `update_config failed [slot ${requestedSlot}] — unknown keys: ${JSON.stringify(unknown)}, raw changes: ${JSON.stringify(changes)}`);
       return { success: false, unknown, reason };
     }
 
-    let userConfig = {};
-    if (fs.existsSync(USER_CONFIG_PATH)) {
-      try {
-        userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-      } catch (error) {
-        return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
+    // Lazy-loaded, per-slot file cache. Per-slot keys (screening/management/
+    // strategy) read+write the requested slot's own file; global keys
+    // (risk/schedule/llm/hiveMind/api/indicators) always read+write slot 1's
+    // file, since that's the only place they're defined.
+    const fileCache = {};
+    function loadSlotFile(slotId) {
+      if (fileCache[slotId]) return fileCache[slotId];
+      const p = SLOT_FILE_PATHS[slotId];
+      let data = {};
+      if (p && fs.existsSync(p)) {
+        data = JSON.parse(fs.readFileSync(p, "utf8"));
       }
+      fileCache[slotId] = data;
+      return data;
+    }
+
+    try {
+      loadSlotFile(1);
+      if (requestedSlot !== 1) loadSlotFile(requestedSlot);
+    } catch (error) {
+      return { success: false, error: `Invalid config file: ${error.message}`, reason };
     }
 
     // Apply to live config immediately after the persisted config is known-good.
+    const touchedSlotIds = new Set();
     for (const [key, val] of Object.entries(applied)) {
       const [section, field] = CONFIG_MAP[key];
-      const before = config[section][field];
-      config[section][field] = val;
-      log("config", `update_config: config.${section}.${field} ${before} → ${val} (verify: ${config[section][field]})`);
+      const isPerSlot = PER_SLOT_SECTIONS.has(section);
+      const targetSlotId = isPerSlot ? requestedSlot : 1;
+      const targetObj = isPerSlot ? slotCfg[section] : config[section];
+      const before = targetObj[field];
+      targetObj[field] = val;
+      touchedSlotIds.add(targetSlotId);
+      log("config", `update_config[slot ${targetSlotId}${isPerSlot ? "" : " · global"}]: ${section}.${field} ${before} → ${val} (verify: ${targetObj[field]})`);
     }
     if (
       applied.binsBelow != null ||
@@ -534,21 +576,21 @@ const toolMap = {
       applied.maxBinsBelow != null ||
       applied.defaultBinsBelow != null
     ) {
-      config.strategy.minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Math.round(Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW)));
-      config.strategy.maxBinsBelow = Math.max(config.strategy.minBinsBelow, Math.round(Number(config.strategy.maxBinsBelow ?? config.strategy.minBinsBelow)));
-      config.strategy.defaultBinsBelow = Math.max(
-        config.strategy.minBinsBelow,
-        Math.min(
-          config.strategy.maxBinsBelow,
-          Math.round(Number(config.strategy.defaultBinsBelow ?? config.strategy.maxBinsBelow)),
-        ),
+      const st = slotCfg.strategy;
+      st.minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Math.round(Number(st.minBinsBelow ?? MIN_SAFE_BINS_BELOW)));
+      st.maxBinsBelow = Math.max(st.minBinsBelow, Math.round(Number(st.maxBinsBelow ?? st.minBinsBelow)));
+      st.defaultBinsBelow = Math.max(
+        st.minBinsBelow,
+        Math.min(st.maxBinsBelow, Math.round(Number(st.defaultBinsBelow ?? st.maxBinsBelow))),
       );
     }
 
     for (const [key, val] of Object.entries(applied)) {
-      const persistPath = CONFIG_MAP[key]?.[2];
+      const [section, , persistPath] = CONFIG_MAP[key];
+      const isPerSlot = PER_SLOT_SECTIONS.has(section);
+      const fileObj = loadSlotFile(isPerSlot ? requestedSlot : 1);
       if (Array.isArray(persistPath) && persistPath.length > 0) {
-        let target = userConfig;
+        let target = fileObj;
         for (const part of persistPath.slice(0, -1)) {
           if (!target[part] || typeof target[part] !== "object" || Array.isArray(target[part])) {
             target[part] = {};
@@ -557,13 +599,19 @@ const toolMap = {
         }
         target[persistPath[persistPath.length - 1]] = val;
       } else {
-        userConfig[key] = val;
+        fileObj[key] = val;
       }
     }
-    userConfig._lastAgentTune = new Date().toISOString();
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
 
-    // Restart cron jobs if intervals changed
+    for (const slotId of touchedSlotIds) {
+      const p = SLOT_FILE_PATHS[slotId];
+      if (!p) continue;
+      const fileObj = loadSlotFile(slotId);
+      if (slotId === 1) fileObj._lastAgentTune = new Date().toISOString();
+      fs.writeFileSync(p, JSON.stringify(fileObj, null, 2));
+    }
+
+    // Restart cron jobs if intervals changed (global — affects all slots)
     const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
     if (intervalChanged && _cronRestarter) {
       _cronRestarter();
@@ -576,11 +624,11 @@ const toolMap = {
     );
     if (lessonsKeys.length > 0) {
       const summary = lessonsKeys.map(k => `${k}=${applied[k]}`).join(", ");
-      addLesson(`[SELF-TUNED] Changed ${summary} — ${reason}`, ["self_tune", "config_change"]);
+      addLesson(`[SELF-TUNED] Slot ${requestedSlot}: Changed ${summary} — ${reason}`, ["self_tune", "config_change"]);
     }
 
-    log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
-    return { success: true, applied, unknown, reason };
+    log("config", `Agent self-tuned [slot ${requestedSlot}]: ${JSON.stringify(applied)} — ${reason}`);
+    return { success: true, slot: requestedSlot, applied, unknown, reason };
   },
 };
 

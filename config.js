@@ -108,6 +108,11 @@ function buildSlotSections(uu) {
       minTokenAgeHours:   uu.minTokenAgeHours   ?? null, // null = no minimum
       maxTokenAgeHours:   uu.maxTokenAgeHours   ?? null, // null = no maximum
       athFilterPct:       uu.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
+      // Falling-knife guard: reject candidates whose recent price sparkline (price_trend)
+      // is already down >= X% from its in-window peak. Single-sided SOL bleeds when price
+      // falls below range, so entering a token that's already rolling over is the worst case.
+      // null/0 = off. Reduces (does not eliminate) negative-OOR entries.
+      maxEntryDropFromPeakPct: uu.maxEntryDropFromPeakPct ?? null,
     },
 
     // ─── Position Management ────────────────
@@ -175,6 +180,13 @@ function buildSlotSections(uu) {
       minBinsBelow: strategyMinBinsBelow,
       maxBinsBelow: strategyMaxBinsBelow,
       defaultBinsBelow: strategyDefaultBinsBelow,
+      // Hardcode downside floor: clamp bins_below UP to this if the LLM passes a tighter
+      // range. Wider range = price must fall further before the position goes OOR (35≈29%
+      // downside, 50≈39%). Never rejects — only widens. Clamped to [minBinsBelow, maxBinsBelow].
+      binsBelowFloor: Math.min(
+        strategyMaxBinsBelow,
+        Math.max(strategyMinBinsBelow, Math.round(numericConfig(uu.binsBelowFloor) ?? strategyDefaultBinsBelow)),
+      ),
     },
   };
 }

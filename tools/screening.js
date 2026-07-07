@@ -44,6 +44,9 @@ function scoreCandidate(pool) {
 }
 
 function numeric(value) {
+  // Number(null) === 0 — without this guard, a pool with volume: null gets
+  // treated as volume 0 and false-rejected instead of just missing data.
+  if (value == null) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -51,6 +54,23 @@ function numeric(value) {
 function isUsableVolatility(value) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0;
+}
+
+/**
+ * Falling-knife guard. Given a price_trend sparkline (array of recent prices,
+ * oldest→newest), return how far (%) the latest price sits below the window's
+ * peak. A large value means the token is already rolling over — the worst time
+ * to enter a single-sided SOL position (it bleeds when price keeps falling
+ * below range). Returns null when there isn't enough data to judge.
+ */
+function priceTrendDropFromPeakPct(trend) {
+  if (!Array.isArray(trend) || trend.length < 4) return null;
+  const pts = trend.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  if (pts.length < 4) return null;
+  const last = pts[pts.length - 1];
+  const peak = Math.max(...pts);
+  if (peak <= 0) return null;
+  return ((peak - last) / peak) * 100;
 }
 
 function includesCaseInsensitive(values, value) {
@@ -584,6 +604,16 @@ export async function getTopCandidates({ limit = 10, screening = null } = {}) {
       if (!isUsableVolatility(p.volatility)) {
         pushFilteredReason(filteredOut, p, `volatility ${p.volatility ?? "unknown"} is unusable`);
         return false;
+      }
+      // Falling-knife guard: skip tokens already rolling over from their recent peak.
+      const maxDropFromPeak = Number(s.maxEntryDropFromPeakPct ?? 0);
+      if (Number.isFinite(maxDropFromPeak) && maxDropFromPeak > 0) {
+        const dropPct = priceTrendDropFromPeakPct(p.price_trend);
+        if (dropPct != null && dropPct >= maxDropFromPeak) {
+          pushFilteredReason(filteredOut, p, `price rolling over: ${dropPct.toFixed(1)}% below recent peak (>= ${maxDropFromPeak}%)`);
+          log("screening", `Falling-knife filter: dropped ${p.name} — ${dropPct.toFixed(1)}% below recent peak`);
+          return false;
+        }
       }
       if (occupiedPools.has(p.pool)) {
         pushFilteredReason(filteredOut, p, "already have an open position in this pool");

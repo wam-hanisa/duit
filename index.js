@@ -1195,19 +1195,22 @@ function formatWalletStatus(wallet, positions) {
   ].join("\n");
 }
 
-function formatConfigSnapshot() {
+function formatConfigSnapshot(slotId = null) {
+  const slotCfg = slotId ? resolveSlotConfig(slotId) : config;
+  const label = slotId && config.slots.length > 1 ? ` (slot ${slotId} · ${slotCfg.strategy.strategy})` : "";
   return [
-    "Config snapshot",
+    `Config snapshot${label}`,
     "",
-    `Strategy: ${config.strategy.strategy} | binsBelow: ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | default ${config.strategy.defaultBinsBelow}`,
-    `Deploy: ${config.management.deployAmountSol} SOL | gasReserve: ${config.management.gasReserve} | maxPositions: ${config.risk.maxPositions}`,
-    `Stop loss: ${config.management.stopLossPct}% | take profit: ${config.management.takeProfitPct}%`,
-    `Trailing: ${config.management.trailingTakeProfit ? "on" : "off"} | trigger ${config.management.trailingTriggerPct}% | drop ${config.management.trailingDropPct}%`,
-    `OOR: ${config.management.outOfRangeWaitMinutes}m | cooldown ${config.management.oorCooldownTriggerCount}x / ${config.management.oorCooldownHours}h`,
-    `Repeat deploy cooldown: ${config.management.repeatDeployCooldownEnabled ? "on" : "off"} | ${config.management.repeatDeployCooldownTriggerCount}x / ${config.management.repeatDeployCooldownHours}h | min fee earned ${config.management.repeatDeployCooldownMinFeeEarnedPct}% | ${config.management.repeatDeployCooldownScope}`,
-    `Yield floor: ${config.management.minFeePerTvl24h}% | min age ${config.management.minAgeBeforeYieldCheck}m`,
-    `Screening: ${config.screening.category} / ${config.screening.timeframe} | TVL ${config.screening.minTvl}-${config.screening.maxTvl}`,
-    `Intervals: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m`,
+    `Strategy: ${slotCfg.strategy.strategy} | binsBelow: ${slotCfg.strategy.minBinsBelow}-${slotCfg.strategy.maxBinsBelow} | default ${slotCfg.strategy.defaultBinsBelow}`,
+    `Deploy: ${slotCfg.management.deployAmountSol} SOL | gasReserve: ${slotCfg.management.gasReserve} | maxPositions: ${config.risk.maxPositions} (shared)`,
+    `Stop loss: ${slotCfg.management.stopLossPct}% | take profit: ${slotCfg.management.takeProfitPct}%`,
+    `Trailing: ${slotCfg.management.trailingTakeProfit ? "on" : "off"} | trigger ${slotCfg.management.trailingTriggerPct}% | drop ${slotCfg.management.trailingDropPct}%`,
+    `Whale-watch: ${slotCfg.management.whaleWatchEnabled ? "on" : "off"} | threshold ${slotCfg.management.whaleDumpScoreThreshold} | fastDrop ${slotCfg.management.whaleFastDropPct}% | crashDrop ${slotCfg.management.whaleCrashDropPct}%`,
+    `OOR: ${slotCfg.management.outOfRangeWaitMinutes}m | cooldown ${slotCfg.management.oorCooldownTriggerCount}x / ${slotCfg.management.oorCooldownHours}h`,
+    `Repeat deploy cooldown: ${slotCfg.management.repeatDeployCooldownEnabled ? "on" : "off"} | ${slotCfg.management.repeatDeployCooldownTriggerCount}x / ${slotCfg.management.repeatDeployCooldownHours}h | min fee earned ${slotCfg.management.repeatDeployCooldownMinFeeEarnedPct}% | ${slotCfg.management.repeatDeployCooldownScope}`,
+    `Yield floor: ${slotCfg.management.minFeePerTvl24h}% | min age ${slotCfg.management.minAgeBeforeYieldCheck}m`,
+    `Screening: ${slotCfg.screening.category} / ${slotCfg.screening.timeframe} | TVL ${slotCfg.screening.minTvl}-${slotCfg.screening.maxTvl} | maxVol ${slotCfg.screening.maxVolatility ?? "off"}`,
+    `Intervals: manage ${config.schedule.managementIntervalMin}m | screen ${config.schedule.screeningIntervalMin}m (shared)`,
     `HiveMind: ${isHiveMindEnabled() ? "enabled" : "disabled"}${config.hiveMind.agentId ? ` | ${config.hiveMind.agentId}` : ""}`,
   ].join("\n");
 }
@@ -1224,30 +1227,41 @@ function parseConfigValue(raw) {
   return value;
 }
 
-function settingValue(key) {
+// Keys whose value is shared across every slot (not per-slot screening/
+// management/strategy). Used to (a) resolve their value from global config
+// regardless of which slot tab is open, and (b) label them "(shared)" in the
+// button menu so editing them from a Slot 2 view doesn't surprise anyone.
+const GLOBAL_SETTING_KEYS = new Set([
+  "lpAgentRelayEnabled", "chartIndicatorsEnabled", "managementIntervalMin", "screeningIntervalMin",
+  "indicatorEntryPreset", "indicatorExitPreset", "rsiLength", "indicatorIntervals", "requireAllIntervals",
+  "maxPositions", "maxDeployAmount",
+]);
+
+function settingValue(key, slotId = 1) {
+  const slotCfg = resolveSlotConfig(slotId);
   const values = {
-    solMode: config.management.solMode,
+    solMode: slotCfg.management.solMode,
     lpAgentRelayEnabled: config.api.lpAgentRelayEnabled,
     chartIndicatorsEnabled: config.indicators.enabled,
-    trailingTakeProfit: config.management.trailingTakeProfit,
-    useDiscordSignals: config.screening.useDiscordSignals,
-    blockPvpSymbols: config.screening.blockPvpSymbols,
-    strategy: config.strategy.strategy,
-    minBinsBelow: config.strategy.minBinsBelow,
-    maxBinsBelow: config.strategy.maxBinsBelow,
-    defaultBinsBelow: config.strategy.defaultBinsBelow,
-    deployAmountSol: config.management.deployAmountSol,
-    gasReserve: config.management.gasReserve,
+    trailingTakeProfit: slotCfg.management.trailingTakeProfit,
+    useDiscordSignals: slotCfg.screening.useDiscordSignals,
+    blockPvpSymbols: slotCfg.screening.blockPvpSymbols,
+    strategy: slotCfg.strategy.strategy,
+    minBinsBelow: slotCfg.strategy.minBinsBelow,
+    maxBinsBelow: slotCfg.strategy.maxBinsBelow,
+    defaultBinsBelow: slotCfg.strategy.defaultBinsBelow,
+    deployAmountSol: slotCfg.management.deployAmountSol,
+    gasReserve: slotCfg.management.gasReserve,
     maxPositions: config.risk.maxPositions,
     maxDeployAmount: config.risk.maxDeployAmount,
-    takeProfitPct: config.management.takeProfitPct,
-    stopLossPct: config.management.stopLossPct,
-    trailingTriggerPct: config.management.trailingTriggerPct,
-    trailingDropPct: config.management.trailingDropPct,
-    repeatDeployCooldownEnabled: config.management.repeatDeployCooldownEnabled,
-    repeatDeployCooldownTriggerCount: config.management.repeatDeployCooldownTriggerCount,
-    repeatDeployCooldownHours: config.management.repeatDeployCooldownHours,
-    repeatDeployCooldownMinFeeEarnedPct: config.management.repeatDeployCooldownMinFeeEarnedPct,
+    takeProfitPct: slotCfg.management.takeProfitPct,
+    stopLossPct: slotCfg.management.stopLossPct,
+    trailingTriggerPct: slotCfg.management.trailingTriggerPct,
+    trailingDropPct: slotCfg.management.trailingDropPct,
+    repeatDeployCooldownEnabled: slotCfg.management.repeatDeployCooldownEnabled,
+    repeatDeployCooldownTriggerCount: slotCfg.management.repeatDeployCooldownTriggerCount,
+    repeatDeployCooldownHours: slotCfg.management.repeatDeployCooldownHours,
+    repeatDeployCooldownMinFeeEarnedPct: slotCfg.management.repeatDeployCooldownMinFeeEarnedPct,
     managementIntervalMin: config.schedule.managementIntervalMin,
     screeningIntervalMin: config.schedule.screeningIntervalMin,
     indicatorEntryPreset: config.indicators.entryPreset,
@@ -1255,6 +1269,24 @@ function settingValue(key) {
     rsiLength: config.indicators.rsiLength,
     indicatorIntervals: config.indicators.intervals,
     requireAllIntervals: config.indicators.requireAllIntervals,
+    // Screening filters
+    minTvl: slotCfg.screening.minTvl,
+    maxTvl: slotCfg.screening.maxTvl,
+    minVolume: slotCfg.screening.minVolume,
+    minMcap: slotCfg.screening.minMcap,
+    maxMcap: slotCfg.screening.maxMcap,
+    minHolders: slotCfg.screening.minHolders,
+    minOrganic: slotCfg.screening.minOrganic,
+    minBinStep: slotCfg.screening.minBinStep,
+    maxBinStep: slotCfg.screening.maxBinStep,
+    maxVolatility: slotCfg.screening.maxVolatility,
+    // Whale watch
+    whaleWatchEnabled: slotCfg.management.whaleWatchEnabled,
+    whaleDumpScoreThreshold: slotCfg.management.whaleDumpScoreThreshold,
+    whaleFastDropPct: slotCfg.management.whaleFastDropPct,
+    whaleCrashDropPct: slotCfg.management.whaleCrashDropPct,
+    whaleHolderBigDropPct: slotCfg.management.whaleHolderBigDropPct,
+    whaleDeclineStreakCount: slotCfg.management.whaleDeclineStreakCount,
   };
   return values[key];
 }
@@ -1269,43 +1301,58 @@ function settingButton(label, data) {
   return { text: label, callback_data: data };
 }
 
-function toggleButton(key, label) {
-  return settingButton(`${label}: ${fmtSettingValue(settingValue(key))}`, `cfg:toggle:${key}`);
+function labelWithScope(key, label) {
+  return GLOBAL_SETTING_KEYS.has(key) ? `${label} (shared)` : label;
 }
 
-function stepButtons(key, label, step, { digits = 2 } = {}) {
-  const value = Number(settingValue(key));
+function toggleButton(key, label, slotId = 1) {
+  return settingButton(`${labelWithScope(key, label)}: ${fmtSettingValue(settingValue(key, slotId))}`, `cfg:toggle:${slotId}:${key}`);
+}
+
+function stepButtons(key, label, step, { digits = 2 } = {}, slotId = 1) {
+  const value = Number(settingValue(key, slotId));
   const shown = Number.isFinite(value) ? value.toFixed(digits).replace(/\.?0+$/, "") : "?";
   return [
-    settingButton(`- ${label}`, `cfg:step:${key}:${-step}`),
-    settingButton(`${label}: ${shown}`, `cfg:noop`),
-    settingButton(`+ ${label}`, `cfg:step:${key}:${step}`),
+    settingButton(`- ${label}`, `cfg:step:${slotId}:${key}:${-step}`),
+    settingButton(`${labelWithScope(key, label)}: ${shown}`, `cfg:noop`),
+    settingButton(`+ ${label}`, `cfg:step:${slotId}:${key}:${step}`),
   ];
 }
 
-function renderSettingsMenu(page = "main") {
+function renderSettingsMenu(page = "main", slotId = 1) {
+  const multiSlot = config.slots.length > 1;
+  const slotCfg = resolveSlotConfig(slotId);
   const title = page === "main" ? "Settings menu" : `Settings: ${page}`;
+  const slotLabel = multiSlot ? ` — Slot ${slotId} (${slotCfg.strategy.strategy})` : "";
   const summary = [
-    title,
+    `${title}${slotLabel}`,
     "",
-    `Mode: ${config.management.solMode ? "SOL" : "USD"} | Relay: ${config.api.lpAgentRelayEnabled ? "on" : "off"}`,
-    `Strategy: ${config.strategy.strategy} | bins ${config.strategy.minBinsBelow}-${config.strategy.maxBinsBelow} | deploy ${config.management.deployAmountSol} SOL`,
-    `TP/SL: ${config.management.takeProfitPct}% / ${config.management.stopLossPct}% | trailing ${config.management.trailingTakeProfit ? "on" : "off"}`,
+    `Mode: ${slotCfg.management.solMode ? "SOL" : "USD"} | Relay: ${config.api.lpAgentRelayEnabled ? "on" : "off"}`,
+    `Strategy: ${slotCfg.strategy.strategy} | bins ${slotCfg.strategy.minBinsBelow}-${slotCfg.strategy.maxBinsBelow} | deploy ${slotCfg.management.deployAmountSol} SOL`,
+    `TP/SL: ${slotCfg.management.takeProfitPct}% / ${slotCfg.management.stopLossPct}% | trailing ${slotCfg.management.trailingTakeProfit ? "on" : "off"}`,
+    `Whale-watch: ${slotCfg.management.whaleWatchEnabled ? "on" : "off"} | threshold ${slotCfg.management.whaleDumpScoreThreshold}`,
     `Indicators: ${config.indicators.enabled ? "on" : "off"} | entry ${config.indicators.entryPreset} | ${fmtSettingValue(config.indicators.intervals)}`,
   ].join("\n");
 
-  const nav = [
-    [
-      settingButton("Main", "cfg:page:main"),
-      settingButton("Risk", "cfg:page:risk"),
-      settingButton("Screen", "cfg:page:screen"),
-      settingButton("Indicators", "cfg:page:indicators"),
-    ],
-  ];
+  const nav = [];
+  if (multiSlot) {
+    nav.push(config.slots.map((s) =>
+      settingButton(s.id === slotId ? `● Slot ${s.id}` : `Slot ${s.id}`, `cfg:slot:${s.id}:${page}`)
+    ));
+  }
+  nav.push([
+    settingButton("Main", `cfg:page:${slotId}:main`),
+    settingButton("Risk", `cfg:page:${slotId}:risk`),
+    settingButton("Screen", `cfg:page:${slotId}:screen`),
+  ]);
+  nav.push([
+    settingButton("Whale", `cfg:page:${slotId}:whale`),
+    settingButton("Indicators", `cfg:page:${slotId}:indicators`),
+  ]);
 
   const footer = [
     [
-      settingButton("Refresh", `cfg:page:${page}`),
+      settingButton("Refresh", `cfg:page:${slotId}:${page}`),
       settingButton("Close", "cfg:close"),
     ],
   ];
@@ -1313,73 +1360,93 @@ function renderSettingsMenu(page = "main") {
   let rows;
   if (page === "risk") {
     rows = [
-      stepButtons("deployAmountSol", "Deploy", 0.1),
-      stepButtons("gasReserve", "Gas", 0.05),
-      stepButtons("maxPositions", "Max pos", 1, { digits: 0 }),
-      stepButtons("maxDeployAmount", "Max SOL", 1, { digits: 0 }),
-      stepButtons("takeProfitPct", "TP %", 1, { digits: 0 }),
-      stepButtons("stopLossPct", "SL %", 5, { digits: 0 }),
-      [toggleButton("trailingTakeProfit", "Trailing TP")],
-      stepButtons("trailingTriggerPct", "Trail trigger", 0.5, { digits: 1 }),
-      stepButtons("trailingDropPct", "Trail drop", 0.5, { digits: 1 }),
-      [toggleButton("repeatDeployCooldownEnabled", "Repeat cooldown")],
-      stepButtons("repeatDeployCooldownTriggerCount", "Repeat count", 1, { digits: 0 }),
-      stepButtons("repeatDeployCooldownHours", "Repeat hrs", 1, { digits: 0 }),
-      stepButtons("repeatDeployCooldownMinFeeEarnedPct", "Fee earned %", 0.1, { digits: 1 }),
+      stepButtons("deployAmountSol", "Deploy", 0.1, {}, slotId),
+      stepButtons("gasReserve", "Gas", 0.05, {}, slotId),
+      stepButtons("maxPositions", "Max pos", 1, { digits: 0 }, slotId),
+      stepButtons("maxDeployAmount", "Max SOL", 1, { digits: 0 }, slotId),
+      stepButtons("takeProfitPct", "TP %", 1, { digits: 0 }, slotId),
+      stepButtons("stopLossPct", "SL %", 5, { digits: 0 }, slotId),
+      [toggleButton("trailingTakeProfit", "Trailing TP", slotId)],
+      stepButtons("trailingTriggerPct", "Trail trigger", 0.5, { digits: 1 }, slotId),
+      stepButtons("trailingDropPct", "Trail drop", 0.5, { digits: 1 }, slotId),
+      [toggleButton("repeatDeployCooldownEnabled", "Repeat cooldown", slotId)],
+      stepButtons("repeatDeployCooldownTriggerCount", "Repeat count", 1, { digits: 0 }, slotId),
+      stepButtons("repeatDeployCooldownHours", "Repeat hrs", 1, { digits: 0 }, slotId),
+      stepButtons("repeatDeployCooldownMinFeeEarnedPct", "Fee earned %", 0.1, { digits: 1 }, slotId),
     ];
   } else if (page === "screen") {
     rows = [
-      [toggleButton("useDiscordSignals", "Discord signals"), toggleButton("blockPvpSymbols", "PVP hard block")],
+      [toggleButton("useDiscordSignals", "Discord signals", slotId), toggleButton("blockPvpSymbols", "PVP hard block", slotId)],
       [
-        settingButton(`Strategy: spot`, "cfg:set:strategy:spot"),
-        settingButton(`Strategy: bid_ask`, "cfg:set:strategy:bid_ask"),
+        settingButton(`Strategy: spot`, `cfg:set:${slotId}:strategy:spot`),
+        settingButton(`Strategy: bid_ask`, `cfg:set:${slotId}:strategy:bid_ask`),
       ],
-      stepButtons("minBinsBelow", "Min bins", 1, { digits: 0 }),
-      stepButtons("maxBinsBelow", "Max bins", 1, { digits: 0 }),
-      stepButtons("defaultBinsBelow", "Default bins", 1, { digits: 0 }),
-      stepButtons("managementIntervalMin", "Manage min", 1, { digits: 0 }),
-      stepButtons("screeningIntervalMin", "Screen min", 5, { digits: 0 }),
+      stepButtons("minBinsBelow", "Min bins", 1, { digits: 0 }, slotId),
+      stepButtons("maxBinsBelow", "Max bins", 1, { digits: 0 }, slotId),
+      stepButtons("defaultBinsBelow", "Default bins", 1, { digits: 0 }, slotId),
+      stepButtons("minTvl", "Min TVL", 5000, { digits: 0 }, slotId),
+      stepButtons("maxTvl", "Max TVL", 25000, { digits: 0 }, slotId),
+      stepButtons("minVolume", "Min vol$", 100, { digits: 0 }, slotId),
+      stepButtons("minMcap", "Min mcap", 25000, { digits: 0 }, slotId),
+      stepButtons("maxMcap", "Max mcap", 5000000, { digits: 0 }, slotId),
+      stepButtons("minHolders", "Min holders", 50, { digits: 0 }, slotId),
+      stepButtons("minOrganic", "Min organic", 5, { digits: 0 }, slotId),
+      stepButtons("minBinStep", "Min bin step", 5, { digits: 0 }, slotId),
+      stepButtons("maxBinStep", "Max bin step", 5, { digits: 0 }, slotId),
+      stepButtons("maxVolatility", "Max volatility", 0.5, { digits: 1 }, slotId),
+      stepButtons("managementIntervalMin", "Manage min", 1, { digits: 0 }, slotId),
+      stepButtons("screeningIntervalMin", "Screen min", 5, { digits: 0 }, slotId),
+    ];
+  } else if (page === "whale") {
+    rows = [
+      [toggleButton("whaleWatchEnabled", "Whale watch", slotId)],
+      stepButtons("whaleDumpScoreThreshold", "Score threshold", 1, { digits: 0 }, slotId),
+      stepButtons("whaleFastDropPct", "Fast drop %", 1, { digits: 0 }, slotId),
+      stepButtons("whaleCrashDropPct", "Crash drop %", 1, { digits: 0 }, slotId),
+      stepButtons("whaleHolderBigDropPct", "Holder big drop %", 1, { digits: 0 }, slotId),
+      stepButtons("whaleDeclineStreakCount", "Streak count", 1, { digits: 0 }, slotId),
     ];
   } else if (page === "indicators") {
     rows = [
-      [toggleButton("chartIndicatorsEnabled", "Chart indicators"), toggleButton("requireAllIntervals", "Require all TF")],
+      [toggleButton("chartIndicatorsEnabled", "Chart indicators", slotId), toggleButton("requireAllIntervals", "Require all TF", slotId)],
       [
-        settingButton("TF: 5m", "cfg:set:indicatorIntervals:5_MINUTE"),
-        settingButton("TF: 15m", "cfg:set:indicatorIntervals:15_MINUTE"),
-        settingButton("TF: both", "cfg:set:indicatorIntervals:both"),
+        settingButton("TF: 5m", `cfg:set:${slotId}:indicatorIntervals:5_MINUTE`),
+        settingButton("TF: 15m", `cfg:set:${slotId}:indicatorIntervals:15_MINUTE`),
+        settingButton("TF: both", `cfg:set:${slotId}:indicatorIntervals:both`),
       ],
       [
-        settingButton("Entry: ST", "cfg:set:indicatorEntryPreset:supertrend_break"),
-        settingButton("Entry: RSI", "cfg:set:indicatorEntryPreset:rsi_reversal"),
-        settingButton("Entry: ST/RSI", "cfg:set:indicatorEntryPreset:supertrend_or_rsi"),
+        settingButton("Entry: ST", `cfg:set:${slotId}:indicatorEntryPreset:supertrend_break`),
+        settingButton("Entry: RSI", `cfg:set:${slotId}:indicatorEntryPreset:rsi_reversal`),
+        settingButton("Entry: ST/RSI", `cfg:set:${slotId}:indicatorEntryPreset:supertrend_or_rsi`),
       ],
       [
-        settingButton("Exit: ST", "cfg:set:indicatorExitPreset:supertrend_break"),
-        settingButton("Exit: RSI", "cfg:set:indicatorExitPreset:rsi_reversal"),
-        settingButton("Exit: BB+RSI", "cfg:set:indicatorExitPreset:bb_plus_rsi"),
+        settingButton("Exit: ST", `cfg:set:${slotId}:indicatorExitPreset:supertrend_break`),
+        settingButton("Exit: RSI", `cfg:set:${slotId}:indicatorExitPreset:rsi_reversal`),
+        settingButton("Exit: BB+RSI", `cfg:set:${slotId}:indicatorExitPreset:bb_plus_rsi`),
       ],
-      stepButtons("rsiLength", "RSI len", 1, { digits: 0 }),
+      stepButtons("rsiLength", "RSI len", 1, { digits: 0 }, slotId),
     ];
   } else {
     rows = [
-      [toggleButton("solMode", "SOL mode"), toggleButton("lpAgentRelayEnabled", "LPAgent relay")],
-      [toggleButton("chartIndicatorsEnabled", "Chart indicators"), toggleButton("trailingTakeProfit", "Trailing TP")],
+      [toggleButton("solMode", "SOL mode", slotId), toggleButton("lpAgentRelayEnabled", "LPAgent relay", slotId)],
+      [toggleButton("chartIndicatorsEnabled", "Chart indicators", slotId), toggleButton("trailingTakeProfit", "Trailing TP", slotId)],
       [
-        settingButton("Risk / deploy", "cfg:page:risk"),
-        settingButton("Screening", "cfg:page:screen"),
+        settingButton("Risk / deploy", `cfg:page:${slotId}:risk`),
+        settingButton("Screening", `cfg:page:${slotId}:screen`),
       ],
       [
-        settingButton("Indicators", "cfg:page:indicators"),
-        settingButton("Show config", "cfg:show"),
+        settingButton("Whale watch", `cfg:page:${slotId}:whale`),
+        settingButton("Indicators", `cfg:page:${slotId}:indicators`),
       ],
+      [settingButton("Show config", `cfg:show:${slotId}`)],
     ];
   }
 
   return { text: summary, keyboard: [...nav, ...rows, ...footer] };
 }
 
-async function showSettingsMenu({ messageId = null, page = "main" } = {}) {
-  const menu = renderSettingsMenu(page);
+async function showSettingsMenu({ messageId = null, page = "main", slot = 1 } = {}) {
+  const menu = renderSettingsMenu(page, slot);
   if (messageId) {
     await editMessageWithButtons(menu.text, messageId, menu.keyboard);
   } else {
@@ -1399,7 +1466,6 @@ async function applySettingsMenuCallback(msg) {
   const data = msg.callbackData || msg.text || "";
   const parts = data.split(":");
   const action = parts[1];
-  let page = "main";
 
   if (action === "noop") {
     await answerCallbackQuery(msg.callbackQueryId);
@@ -1410,25 +1476,40 @@ async function applySettingsMenuCallback(msg) {
     await editMessage("Settings menu closed.", msg.messageId);
     return;
   }
-  if (action === "show") {
-    await answerCallbackQuery(msg.callbackQueryId);
-    await editMessageWithButtons(formatConfigSnapshot(), msg.messageId, [[settingButton("Back", "cfg:page:main")]]);
-    return;
-  }
-  if (action === "page") {
-    page = parts[2] || "main";
-    await answerCallbackQuery(msg.callbackQueryId);
-    await showSettingsMenu({ messageId: msg.messageId, page });
+
+  // Every remaining action carries the slot id right after the action name.
+  const slotId = parseInt(parts[2], 10) || 1;
+  if (!config.slots.some((s) => s.id === slotId)) {
+    await answerCallbackQuery(msg.callbackQueryId, `Slot ${slotId} not configured`);
     return;
   }
 
-  const key = parts[2];
+  if (action === "show") {
+    await answerCallbackQuery(msg.callbackQueryId);
+    await editMessageWithButtons(formatConfigSnapshot(slotId), msg.messageId, [[settingButton("Back", `cfg:page:${slotId}:main`)]]);
+    return;
+  }
+  if (action === "page") {
+    const page = parts[3] || "main";
+    await answerCallbackQuery(msg.callbackQueryId);
+    await showSettingsMenu({ messageId: msg.messageId, page, slot: slotId });
+    return;
+  }
+  if (action === "slot") {
+    const page = parts[3] || "main";
+    await answerCallbackQuery(msg.callbackQueryId, `Switched to slot ${slotId}`);
+    await showSettingsMenu({ messageId: msg.messageId, page, slot: slotId });
+    return;
+  }
+
+  const key = parts[3];
+  let page = "main";
   let value;
   if (action === "toggle") {
-    value = !Boolean(settingValue(key));
+    value = !Boolean(settingValue(key, slotId));
   } else if (action === "step") {
-    const current = Number(settingValue(key));
-    const delta = Number(parts[3]);
+    const current = Number(settingValue(key, slotId));
+    const delta = Number(parts[4]);
     if (!Number.isFinite(current) || !Number.isFinite(delta)) {
       await answerCallbackQuery(msg.callbackQueryId, "Invalid setting");
       return;
@@ -1441,28 +1522,35 @@ async function applySettingsMenuCallback(msg) {
     if (key === "repeatDeployCooldownMinFeeEarnedPct") value = Math.max(0, value);
     if (["minBinsBelow", "maxBinsBelow", "defaultBinsBelow"].includes(key)) value = Math.max(35, Math.round(value));
     if (["deployAmountSol", "gasReserve", "maxDeployAmount"].includes(key)) value = Math.max(0, value);
+    if (["minTvl", "maxTvl", "minVolume", "minMcap", "maxMcap", "minHolders", "minBinStep", "maxBinStep"].includes(key)) value = Math.max(0, Math.round(value));
+    if (key === "maxVolatility") value = Math.max(0, value);
+    if (key === "whaleDumpScoreThreshold") value = Math.max(0, Math.round(value));
+    if (["whaleFastDropPct", "whaleCrashDropPct", "whaleHolderBigDropPct", "whaleDeclineStreakCount"].includes(key)) value = Math.max(0, value);
   } else if (action === "set") {
-    value = normalizeMenuValue(key, parts.slice(3).join(":"));
+    value = normalizeMenuValue(key, parts.slice(4).join(":"));
   } else {
     await answerCallbackQuery(msg.callbackQueryId, "Unknown action");
     return;
   }
 
   const result = await executeTool("update_config", {
+    slot: slotId,
     changes: { [key]: value },
-    reason: "Telegram settings menu",
+    reason: `Telegram settings menu (slot ${slotId})`,
   });
   if (!result?.success) {
-    await answerCallbackQuery(msg.callbackQueryId, "Config update failed");
+    await answerCallbackQuery(msg.callbackQueryId, result?.error || "Config update failed");
     return;
   }
   page = key.startsWith("indicator") || key === "chartIndicatorsEnabled" || key === "rsiLength" || key === "requireAllIntervals"
     ? "indicators"
-    : ["useDiscordSignals", "blockPvpSymbols", "strategy", "minBinsBelow", "maxBinsBelow", "defaultBinsBelow", "managementIntervalMin", "screeningIntervalMin"].includes(key)
-      ? "screen"
-      : "risk";
-  await answerCallbackQuery(msg.callbackQueryId, `Updated ${key}`);
-  await showSettingsMenu({ messageId: msg.messageId, page });
+    : key.startsWith("whale")
+      ? "whale"
+      : ["useDiscordSignals", "blockPvpSymbols", "strategy", "minBinsBelow", "maxBinsBelow", "defaultBinsBelow", "managementIntervalMin", "screeningIntervalMin", "minTvl", "maxTvl", "minVolume", "minMcap", "maxMcap", "minHolders", "minOrganic", "minBinStep", "maxBinStep", "maxVolatility"].includes(key)
+        ? "screen"
+        : "risk";
+  await answerCallbackQuery(msg.callbackQueryId, `[Slot ${slotId}] Updated ${key}`);
+  await showSettingsMenu({ messageId: msg.messageId, page, slot: slotId });
 }
 
 function formatHelpText() {
@@ -1478,8 +1566,8 @@ function formatHelpText() {
     "/closeall — close all open positions",
     "/set <n> <note> — set note/instruction on position",
     "/config — show important runtime config",
-    "/settings — button menu for common config",
-    "/setcfg <key> <value> — update persisted config",
+    "/settings [slot] — button menu for common config",
+    "/setcfg [slot] <key> <value> — update persisted config (slot defaults to 1)",
     "/screen — refresh deterministic candidate list",
     "/candidates — show latest cached candidates",
     "/deploy <n> — deploy candidate by cached index",
@@ -1599,8 +1687,10 @@ async function telegramHandler(msg) {
     }
     return;
   }
-  if (text === "/settings" || text === "/menu" || text === "/configmenu") {
-    await showSettingsMenu().catch((e) => sendMessage(`Settings error: ${e.message}`).catch(() => {}));
+  const settingsMatch = text.match(/^\/(settings|menu|configmenu)(?:\s+(\d+))?$/i);
+  if (settingsMatch) {
+    const slot = settingsMatch[2] ? parseInt(settingsMatch[2], 10) : 1;
+    await showSettingsMenu({ slot }).catch((e) => sendMessage(`Settings error: ${e.message}`).catch(() => {}));
     return;
   }
   if (_managementBusy || _screeningBusy || busy) {
@@ -1642,7 +1732,10 @@ async function telegramHandler(msg) {
   }
 
   if (text === "/config") {
-    await sendMessage(formatConfigSnapshot()).catch(() => {});
+    const snapshot = config.slots.length > 1
+      ? config.slots.map((s) => formatConfigSnapshot(s.id)).join("\n\n———\n\n")
+      : formatConfigSnapshot();
+    await sendMessage(snapshot).catch(() => {});
     return;
   }
 
@@ -1745,20 +1838,24 @@ async function telegramHandler(msg) {
     return;
   }
 
-  const setCfgMatch = text.match(/^\/setcfg\s+([A-Za-z0-9_]+)\s+(.+)$/i);
+  // Optional leading slot number: /setcfg 2 deployAmountSol 0.7 (defaults to slot 1)
+  const setCfgMatch = text.match(/^\/setcfg\s+(?:(\d+)\s+)?([A-Za-z][A-Za-z0-9_]*)\s+(.+)$/i);
   if (setCfgMatch) {
     try {
-      const key = setCfgMatch[1];
-      const value = parseConfigValue(setCfgMatch[2]);
+      const slot = setCfgMatch[1] ? parseInt(setCfgMatch[1], 10) : 1;
+      const key = setCfgMatch[2];
+      const value = parseConfigValue(setCfgMatch[3]);
       const result = await executeTool("update_config", {
+        slot,
         changes: { [key]: value },
-        reason: "Telegram slash command /setcfg",
+        reason: `Telegram slash command /setcfg (slot ${slot})`,
       });
       if (!result?.success) {
-        await sendMessage(`Config update failed.\nUnknown: ${(result?.unknown || []).join(", ") || "none"}`).catch(() => {});
+        await sendMessage(`Config update failed.${result?.error ? `\n${result.error}` : ""}\nUnknown: ${(result?.unknown || []).join(", ") || "none"}`).catch(() => {});
         return;
       }
-      await sendMessage(`✅ Updated ${key} = ${JSON.stringify(value)}`).catch(() => {});
+      const slotTag = config.slots.length > 1 ? ` [slot ${result.slot ?? slot}]` : "";
+      await sendMessage(`✅${slotTag} Updated ${key} = ${JSON.stringify(value)}`).catch(() => {});
     } catch (e) {
       await sendMessage(`Error: ${e.message}`).catch(() => {});
     }

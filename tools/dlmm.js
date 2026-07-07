@@ -557,6 +557,17 @@ export async function deployPosition({
   }
   activeBinsBelow = Number(activeBinsBelow);
   activeBinsAbove = Number(activeBinsAbove);
+  // ── Wider downside range floor (hardcode OOR buffer) ───────────
+  // The LLM tends to pass the bare-minimum bins_below (≈35 = 29% downside),
+  // which leaves a single-sided SOL deploy fully bagged + out-of-range when a
+  // token dumps >29% — the dominant negative-OOR loss vector. Clamp UP (never
+  // reject) to the configured floor so every deploy carries a wider cushion
+  // before it goes OOR. Only applies to single-sided SOL deploys.
+  const binsBelowFloor = Number(slotStrategy.binsBelowFloor ?? 0);
+  if (isSingleSidedSol && Number.isFinite(binsBelowFloor) && binsBelowFloor > activeBinsBelow) {
+    log("deploy", `bins_below ${activeBinsBelow} below floor ${binsBelowFloor} — widening for OOR buffer`);
+    activeBinsBelow = binsBelowFloor;
+  }
   if (!Number.isFinite(activeBinsBelow) || !Number.isFinite(activeBinsAbove)) {
     throw new Error("Invalid bin range: bins_below and bins_above must be valid numbers.");
   }
