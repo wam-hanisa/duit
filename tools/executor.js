@@ -1213,11 +1213,24 @@ async function runSafetyChecks(name, args) {
 
 /**
  * Summarize a result for logging (truncate large responses).
+ * Returns an object/value that JSON.stringify()s cleanly — never a blind
+ * string slice, which used to cut nested JSON mid-field (e.g. losing
+ * pnl_usd/pnl_pct off every close_position log with 2+ tx signatures).
  */
 function summarizeResult(result) {
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    const shortened = { ...result };
+    for (const key of ["txs", "claim_txs", "close_txs"]) {
+      if (Array.isArray(shortened[key]) && shortened[key].length > 0) {
+        shortened[key] = `${shortened[key].length} tx(s), first ${shortened[key][0].slice(0, 12)}…`;
+      }
+    }
+    if (JSON.stringify(shortened).length <= 1000) return shortened;
+    return { ...shortened, _log_truncated: true };
+  }
   const str = JSON.stringify(result);
   if (str.length > 1000) {
-    return str.slice(0, 1000) + "...(truncated)";
+    return { _truncated_preview: str.slice(0, 500), _log_truncated: true, _original_length: str.length };
   }
   return result;
 }
