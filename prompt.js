@@ -133,6 +133,13 @@ NARRATIVE QUALITY (your main judgment call):
 - BAD: generic hype ("next 100x", "community token") with no identifiable subject
 - Smart wallets present → can override weak narrative, and are the only valid override for an OKX rugpull flag
 
+WINNER PROFILE (measured on this agent's own 441 closed positions — prefer strongly, tie-break on these):
+- fee_active_tvl_ratio >= 1 → 72% historical win rate (vs 36% below 0.2). The single strongest signal.
+- holders between 1,000 and 5,000 → the profit sweet spot (+$66 total). Above 5,000 = late-stage distribution, historically 47% win and net-negative.
+- smart wallets present → 62% win vs 46% without.
+- A candidate matching ALL THREE (fee_tvl>=1, holders<5000, smart wallets) is the highest-conviction profile this agent has — prefer it over any single flashier metric.
+- Structural quality context: higher lock_pct (locked liquidity) = rug-resistant; very large avg_trade_usd = whale-dominated flow (caution); positive traders_change_pct and holders_change_pct = organic growth, negative = distribution.
+
 POOL MEMORY: ALWAYS call get_pool_memory before deploy. Skip immediately (the safety check WILL reject) when the last close was: a whale dump (12h–48h cooldown), "pumped" within ${s.reentryAfterPumpMinutes ?? 60}m, low yield (pool cooldown), or 3+ repeated out-of-range losses (24h cooldown). BUT a NORMAL loss (small stop loss, trailing-TP giveback) is re-enterable once past the ${s.reentryMinCooldownMin ?? 30}m floor: the deploy_position smart re-entry check re-fetches live data and ALLOWS the deploy if the pool stabilized (current volatility ≤ the level when you lost, TVL and fee/TVL still healthy), or blocks it with a specific reason if not. Do not blanket-skip a strong, recurring pool over a single normal loss — let the safety check be the gatekeeper.
 
 DEPLOY RULES:

@@ -440,10 +440,19 @@ export async function getActiveBin({ pool_address }) {
   const pool = await getPool(pool_address);
   const activeBin = await pool.getActiveBin();
 
+  // Expose bin liquidity so callers can compute depth ratios.
+  // xAmount/yAmount are raw lamport-equivalents; we leave conversion to caller.
+  const xAmount = activeBin.xAmount != null ? activeBin.xAmount.toString() : null;
+  const yAmount = activeBin.yAmount != null ? activeBin.yAmount.toString() : null;
+  const supply = activeBin.supply != null ? activeBin.supply.toString() : null;
+
   return {
     binId: activeBin.binId,
     price: pool.fromPricePerLamport(Number(activeBin.price)),
     pricePerLamport: activeBin.price.toString(),
+    xAmount,
+    yAmount,
+    supply,
   };
 }
 

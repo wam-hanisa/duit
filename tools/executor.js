@@ -118,6 +118,19 @@ async function validateDeployPoolThresholds(args) {
     };
   }
 
+  // Rug-authority re-check on fresh detail (safety net behind the screen filter).
+  if (sc.blockMintAuthority && detail?.token_x?.has_mint_authority === true) {
+    return { pass: false, reason: "Base token has an active mint authority (rug vector). Refusing deploy." };
+  }
+  if (sc.blockFreezeAuthority && detail?.token_x?.has_freeze_authority === true) {
+    return { pass: false, reason: "Base token has an active freeze authority (rug vector). Refusing deploy." };
+  }
+  const freshHolders = numberOrNull(detail?.base_token_holders);
+  const maxHolders = numberOrNull(sc.maxHolders);
+  if (maxHolders != null && freshHolders != null && freshHolders > maxHolders) {
+    return { pass: false, reason: `Token holders ${freshHolders} above configured maxHolders ${maxHolders} (late-stage/distribution profile).` };
+  }
+
   const tvl = poolDetailTvl(detail);
   const minTvl = numberOrNull(sc.minTvl);
   const maxTvl = numberOrNull(sc.maxTvl);
@@ -242,6 +255,8 @@ function normalizeConfigValue(key, value) {
     "solMode",
     "darwinEnabled",
     "lpAgentRelayEnabled",
+    "blockMintAuthority",
+    "blockFreezeAuthority",
   ]);
   const arrayKeys = new Set(["allowedLaunchpads", "blockedLaunchpads"]);
   const stringKeys = new Set([
@@ -374,6 +389,11 @@ const toolMap = {
       minOrganic: ["screening", "minOrganic"],
       minQuoteOrganic: ["screening", "minQuoteOrganic"],
       minHolders: ["screening", "minHolders"],
+      maxHolders: ["screening", "maxHolders"],
+      blockMintAuthority: ["screening", "blockMintAuthority"],
+      blockFreezeAuthority: ["screening", "blockFreezeAuthority"],
+      minNetDepositsChangePct: ["screening", "minNetDepositsChangePct"],
+      minHoldersChangePct: ["screening", "minHoldersChangePct"],
       minMcap: ["screening", "minMcap"],
       maxMcap: ["screening", "maxMcap"],
       minBinStep: ["screening", "minBinStep"],
@@ -719,6 +739,33 @@ export async function executeTool(name, args) {
       } else if (name === "close_position") {
         const closedTracked = args.position_address ? getTrackedPosition(args.position_address) : null;
         notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, reason: args.reason || null, slot: config.slots.length > 1 ? (closedTracked?.slot ?? 1) : null, strategy: closedTracked?.strategy || null }).catch(() => {});
+        // Record smart-wallet quality: each wallet present in this pool gets our
+        // close PnL attributed to its rolling record (feeds screening labels).
+        {
+          const closedPoolAddr = result.pool || args.pool_address;
+          const closedPnl = Number(result.pnl_pct);
+          if (closedPoolAddr && Number.isFinite(closedPnl)) {
+            (async () => {
+              try {
+                const swCheck = await checkSmartWalletsOnPool({ pool_address: closedPoolAddr });
+                const presentWallets = swCheck?.in_pool || [];
+                if (presentWallets.length > 0) {
+                  const { recordWalletAppearance } = await import("../smart-wallet-quality.js");
+                  for (const w of presentWallets) {
+                    recordWalletAppearance({
+                      address: w.address,
+                      pool: closedPoolAddr,
+                      pnl_pct: closedPnl,
+                      pair: result.pool_name,
+                    });
+                  }
+                }
+              } catch (e) {
+                log("smart_wallet_quality_warn", `Failed to record wallet appearances: ${e.message}`);
+              }
+            })();
+          }
+        }
         // Free whale-watch snapshot memory for closed positions
         if (args.position_address) {
           import("../whale-watch.js").then(({ clearWhaleSnapshot }) => clearWhaleSnapshot(args.position_address)).catch(() => {});

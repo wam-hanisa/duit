@@ -86,6 +86,11 @@ function buildSlotSections(uu) {
       minOrganic:        uu.minOrganic        ?? 60,
       minQuoteOrganic:   uu.minQuoteOrganic   ?? 60,
       minHolders:        uu.minHolders        ?? 500,
+      maxHolders:        uu.maxHolders        ?? null, // null = no cap; >5k holder tokens ran 47% win / -$21 vs 63% / +$66 in the 1k-5k band (441-trade sample)
+      blockMintAuthority:   uu.blockMintAuthority   ?? true, // live mint authority can print supply into your range
+      blockFreezeAuthority: uu.blockFreezeAuthority ?? true, // freeze authority can lock the pool's token accounts mid-position
+      minNetDepositsChangePct: uu.minNetDepositsChangePct ?? null, // e.g. -30 = skip pools whose LP net deposits fell >30% (LP exodus); null = off
+      minHoldersChangePct:     uu.minHoldersChangePct     ?? null, // e.g. -2 = skip tokens actively losing holders (distribution); null = off
       minMcap:           uu.minMcap           ?? 150_000,
       maxMcap:           uu.maxMcap           ?? 10_000_000,
       minBinStep:        uu.minBinStep        ?? 80,
@@ -380,6 +385,11 @@ export function reloadScreeningThresholds() {
     if (fresh.minOrganic     != null) s.minOrganic     = fresh.minOrganic;
     if (fresh.minQuoteOrganic != null) s.minQuoteOrganic = fresh.minQuoteOrganic;
     if (fresh.minHolders     != null) s.minHolders     = fresh.minHolders;
+    if (fresh.maxHolders     !== undefined) s.maxHolders = fresh.maxHolders;
+    if (fresh.blockMintAuthority   !== undefined) s.blockMintAuthority   = fresh.blockMintAuthority;
+    if (fresh.blockFreezeAuthority !== undefined) s.blockFreezeAuthority = fresh.blockFreezeAuthority;
+    if (fresh.minNetDepositsChangePct !== undefined) s.minNetDepositsChangePct = fresh.minNetDepositsChangePct;
+    if (fresh.minHoldersChangePct     !== undefined) s.minHoldersChangePct     = fresh.minHoldersChangePct;
     if (fresh.minMcap        != null) s.minMcap        = fresh.minMcap;
     if (fresh.maxMcap        != null) s.maxMcap        = fresh.maxMcap;
     if (fresh.minTvl         != null) s.minTvl         = fresh.minTvl;

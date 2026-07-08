@@ -30,6 +30,13 @@ const PERFORMANCE_SIGNAL_FIELDS = [
   "study_win_rate",
   "hive_consensus",
   "volatility",
+  // Structural-quality signals (logged since Jul 2026 for bucket mining —
+  // deliberately NOT used in deploy decisions or Darwin until they replicate)
+  "lock_pct",
+  "avg_trade_usd",
+  "traders_change_pct",
+  "holders_change_pct",
+  "net_deposits_change_pct",
 ];
 const MAX_MANUAL_LESSON_LENGTH = 400;
 

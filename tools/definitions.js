@@ -385,7 +385,7 @@ WARNING: This executes a real on-chain transaction.`,
 Changes persist to the config file and take effect immediately — no restart needed.
 
 VALID KEYS (use EXACTLY these key names, nothing else):
-Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minQuoteOrganic, minHolders, minMcap, maxMcap, minBinStep, maxBinStep, maxVolatility, maxSingleHolderPct, timeframe, category, minTokenFeesSol, excludeHighSupplyConcentration, allowedLaunchpads, blockedLaunchpads
+Screening: minFeeActiveTvlRatio, minTvl, maxTvl, minVolume, minOrganic, minQuoteOrganic, minHolders, maxHolders, minMcap, maxMcap, minBinStep, maxBinStep, maxVolatility, maxSingleHolderPct, timeframe, category, minTokenFeesSol, excludeHighSupplyConcentration, allowedLaunchpads, blockedLaunchpads, blockMintAuthority, blockFreezeAuthority, minNetDepositsChangePct, minHoldersChangePct
 Management: minClaimAmount, outOfRangeBinsToClose, outOfRangeWaitMinutes, oorCooldownTriggerCount, oorCooldownHours, repeatDeployCooldownEnabled, repeatDeployCooldownTriggerCount, repeatDeployCooldownHours, repeatDeployCooldownScope, repeatDeployCooldownMinFeeEarnedPct, minVolumeToRebalance, stopLossPct, takeProfitPct, minSolToOpen, deployAmountSol, gasReserve, positionSizePct, whaleWatchEnabled, whaleDumpScoreThreshold, whaleHolderBigDropPct, whaleHolderSmallDropPct, whaleFastDropPct, whaleCrashDropPct, whaleTvlDropPct, whaleDeclineStreakCount, whaleDeclineStreakMinDropPct
 Risk (global — shared by every slot): maxPositions, maxDeployAmount
 Schedule (global): managementIntervalMin, screeningIntervalMin

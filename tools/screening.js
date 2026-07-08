@@ -130,9 +130,32 @@ function getRawPoolScreeningRejectReason(pool, s) {
     return `quote token ${quote?.symbol || quote.address.slice(0, 4) + "…"} is not SOL — agent only supports single-sided SOL deploys`;
   }
 
+  // Rug-authority hard blocks: a live mint authority can print supply into your
+  // range; a freeze authority can freeze the pool's token accounts mid-position.
+  if (s.blockMintAuthority && base?.has_mint_authority === true) {
+    return "base token has active mint authority (rug vector)";
+  }
+  if (s.blockFreezeAuthority && base?.has_freeze_authority === true) {
+    return "base token has active freeze authority (rug vector)";
+  }
   if (mcap == null || mcap < s.minMcap) return `mcap ${mcap ?? "unknown"} below minMcap ${s.minMcap}`;
   if (mcap > s.maxMcap) return `mcap ${mcap} above maxMcap ${s.maxMcap}`;
   if (holders == null || holders < s.minHolders) return `holders ${holders ?? "unknown"} below minHolders ${s.minHolders}`;
+  // Late-stage cutoff: 5k-20k holder tokens ran 47% win / -$21 across 78 deploys
+  // (1k-5k band: 63% win / +$66) — big holder counts mean distribution phase.
+  if (s.maxHolders != null && holders > s.maxHolders) {
+    return `holders ${holders} above maxHolders ${s.maxHolders} — late-stage/distribution`;
+  }
+  // LP exodus: liquidity providers net-pulling funds is informed exit ahead of dumps.
+  const netDepositsChange = numeric(pool?.net_deposits_change_pct);
+  if (s.minNetDepositsChangePct != null && netDepositsChange != null && netDepositsChange < s.minNetDepositsChangePct) {
+    return `LP net deposits ${netDepositsChange}% below ${s.minNetDepositsChangePct}% — LP exodus`;
+  }
+  // Holder-count shrinking right now = distribution in progress.
+  const holdersChange = numeric(pool?.base_token_holders_change_pct);
+  if (s.minHoldersChangePct != null && holdersChange != null && holdersChange < s.minHoldersChangePct) {
+    return `holders shrinking ${holdersChange}% (below ${s.minHoldersChangePct}%) — distribution`;
+  }
   if (volume == null || volume < s.minVolume) return `volume ${volume ?? "unknown"} below minVolume ${s.minVolume}`;
   if (tvl == null || tvl < s.minTvl) return `TVL ${tvl ?? "unknown"} below minTvl ${s.minTvl}`;
   if (s.maxTvl != null && tvl > s.maxTvl) return `TVL ${tvl} above maxTvl ${s.maxTvl}`;
@@ -828,6 +851,7 @@ function condensePool(p) {
       symbol: p.token_y?.symbol,
       mint: p.token_y?.address,
     },
+    quote_price: p.token_y?.price ?? null, // SOL/USD — used for active-bin depth math
     pool_type: p.pool_type,
     bin_step: p.dlmm_params?.bin_step || null,
     fee_pct: p.fee_pct,
@@ -874,6 +898,13 @@ function condensePool(p) {
     fee_change_pct: fix(p.fee_change_pct, 1),
     swap_count: p.swap_count,
     unique_traders: p.unique_traders,
+
+    // Structural quality (logged to signal_snapshot for future bucket mining)
+    lock_pct: fix(p.permanent_lock_liquidity_pct, 1), // % of liquidity permanently locked — rug resistance
+    avg_trade_usd: p.swap_count > 0 ? round(p.volume / p.swap_count) : null, // huge avg = whale-dominated flow
+    traders_change_pct: fix(p.unique_traders_change_pct, 1), // rising trader breadth = organic interest
+    holders_change_pct: fix(p.base_token_holders_change_pct, 2), // shrinking = distribution phase
+    net_deposits_change_pct: fix(p.net_deposits_change_pct, 1), // LPs pulling out = informed exit
   };
 }
 

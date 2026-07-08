@@ -29,12 +29,14 @@ import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTracke
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
+import { getWalletQualityLabel } from "./smart-wallet-quality.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
 import { stageSignals } from "./signal-tracker.js";
 import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
 import { checkWhaleActivity, clearWhaleSnapshot } from "./whale-watch.js";
+import { checkWhaleEntry } from "./whale-entry.js";
 
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
 const isMain = entrypointPath
@@ -643,7 +645,62 @@ async function screenSlot(slot, { silent = false, currentBalance, prePositions }
       const launchpad = ti?.launchpad ?? null;
       const priceChange = ti?.stats_1h?.price_change;
       const netBuyers = ti?.stats_1h?.net_buyers;
-      const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
+      const activeBinData = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value : null;
+      const activeBin = activeBinData?.binId ?? null;
+
+      // ─── Active bin liquidity depth ─────────────────────────────
+      // Compare SOL-side liquidity in the active bin to the pool's active TVL.
+      // Thin active bin = most LP is parked away from price → your deposit becomes
+      // a large share of live liquidity and eats outsized IL on any swap.
+      let activeBinDepthLabel = null;
+      const poolActiveTvl = Number(pool.active_tvl || pool.tvl || 0);
+      const yLamports = activeBinData?.yAmount ? Number(activeBinData.yAmount) : 0;
+      const solUsd = Number(pool.quote_price) || 0; // live SOL/USD from pool detail
+      if (yLamports > 0 && poolActiveTvl > 0 && solUsd > 0) {
+        const binUsd = (yLamports / 1e9) * solUsd;
+        const depthPct = (binUsd / poolActiveTvl) * 100;
+        if (depthPct < 5) {
+          activeBinDepthLabel = `🚨 thin (${depthPct.toFixed(1)}% of active TVL — most LP is OOR, high IL on any swap)`;
+        } else if (depthPct < 15) {
+          activeBinDepthLabel = `⚠️ moderate (${depthPct.toFixed(1)}% of active TVL in active bin)`;
+        } else {
+          activeBinDepthLabel = `✅ healthy (${depthPct.toFixed(1)}% of active TVL concentrated near price)`;
+        }
+      }
+
+      // ─── Whale entry detection ──────────────────────────────────
+      // Inverse of whale-watch: smart_money_buy + net-buyer pressure + smart
+      // wallet presence scored together; >= 4 surfaces a 🐳 WHALE ENTRY tag.
+      const candidateBaseMint = pool.base?.mint || pool.base_mint || ti?.mint || null;
+      const whaleEntry = candidateBaseMint ? checkWhaleEntry({
+        mint: candidateBaseMint,
+        tokenInfo: { ...(ti || {}), smart_money_buy: pool.smart_money_buy ?? ti?.smart_money_buy },
+        holders: null, // holder-delta signal deferred — would need an extra API call per candidate
+        smartWalletCount: sw?.in_pool?.length ?? 0,
+      }) : null;
+
+      // ─── Multi-timeframe volume trend ─────────────────────────
+      // Normalize volumes to per-minute, then compare 5m vs 30m vs 1h.
+      // Real momentum: all three trending up. Fake pump: 5m spike only.
+      const vol5m  = Number(ti?.stats_5m?.buy_vol  ?? 0) + Number(ti?.stats_5m?.sell_vol  ?? 0);
+      const vol30m = Number(ti?.stats_30m?.buy_vol ?? 0) + Number(ti?.stats_30m?.sell_vol ?? 0);
+      const vol1h  = Number(ti?.stats_1h?.buy_vol  ?? 0) + Number(ti?.stats_1h?.sell_vol  ?? 0);
+      const rate5m  = vol5m / 5;
+      const rate30m = vol30m / 30;
+      const rate1h  = vol1h / 60;
+      let volumeTrend = null;
+      if (rate5m > 0 && rate30m > 0 && rate1h > 0) {
+        const spikeRatio = rate5m / rate1h;
+        if (spikeRatio > 2 && rate30m / rate1h < 1.5) {
+          volumeTrend = `🚨 spike_only (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min — likely fake)`;
+        } else if (rate5m > rate30m && rate30m > rate1h) {
+          volumeTrend = `📈 rising (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min — real momentum)`;
+        } else if (rate5m < rate30m && rate30m < rate1h) {
+          volumeTrend = `📉 falling (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min — losing steam)`;
+        } else {
+          volumeTrend = `↔️ mixed (5m=$${Math.round(rate5m)}/min, 30m=$${Math.round(rate30m)}/min, 1h=$${Math.round(rate1h)}/min)`;
+        }
+      }
 
       // OKX signals
       const okxParts = [
@@ -676,9 +733,12 @@ async function screenSlot(slot, { silent = false, currentBalance, prePositions }
         okxParts ? `  okx: ${okxParts}` : okxUnavailable ? `  okx: unavailable` : null,
         okxTags  ? `  tags: ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
-        `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
+        `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => `${w.name}${getWalletQualityLabel(w.address)}`).join(", ")})` : ""}`,
+        whaleEntry ? `  ${whaleEntry.label}` : null,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
+        activeBinDepthLabel ? `  active_bin_depth: ${activeBinDepthLabel}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
+        volumeTrend ? `  volume_trend: ${volumeTrend}` : null,
         n?.narrative ? `  narrative_untrusted: ${sanitizeUntrustedPromptText(n.narrative, 500)}` : `  narrative_untrusted: none`,
         mem ? `  memory_untrusted: ${sanitizeUntrustedPromptText(mem, 500)}` : null,
       ].filter(Boolean).join("\n");
@@ -697,6 +757,12 @@ async function screenSlot(slot, { silent = false, currentBalance, prePositions }
           smart_wallets_present: (sw?.in_pool?.length ?? 0) > 0,
           narrative_quality:     n?.narrative ? "present" : "absent",
           volatility:            pool.volatility            ?? null,
+          // Structural-quality signals — logging only, mined after data accumulates
+          lock_pct:                pool.lock_pct                ?? null,
+          avg_trade_usd:           pool.avg_trade_usd           ?? null,
+          traders_change_pct:      pool.traders_change_pct      ?? null,
+          holders_change_pct:      pool.holders_change_pct      ?? null,
+          net_deposits_change_pct: pool.net_deposits_change_pct ?? null,
         });
       }
 
@@ -2002,6 +2068,16 @@ function getLoneCandidateSkipReason({ pool, sw, n, ti } = {}, screening = config
     return `bot holders ${botPct}% above maximum ${screening.maxBotHoldersPct}%`;
   }
   if (!hasNarrative && smartWalletCount === 0) return "only candidate has no narrative and no smart-wallet confirmation";
+  // Multi-timeframe volume sanity check: reject lone candidates with spike-only volume (likely wash)
+  const loneVol5m = Number(tokenInfo.stats_5m?.buy_vol ?? 0) + Number(tokenInfo.stats_5m?.sell_vol ?? 0);
+  const loneVol1h = Number(tokenInfo.stats_1h?.buy_vol ?? 0) + Number(tokenInfo.stats_1h?.sell_vol ?? 0);
+  if (loneVol5m > 0 && loneVol1h > 0) {
+    const loneRate5m = loneVol5m / 5;
+    const loneRate1h = loneVol1h / 60;
+    if (loneRate1h > 0 && loneRate5m / loneRate1h > 3 && smartWalletCount === 0) {
+      return `volume spike pattern (5m/1h rate ratio ${(loneRate5m / loneRate1h).toFixed(1)}x — likely fake) with no smart-wallet offset`;
+    }
+  }
   return null;
 }
 

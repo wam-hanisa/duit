@@ -700,6 +700,35 @@ Capital note: with ~1.5 SOL and `deployAmountSol: 0.6` per slot, both positions 
 
 ---
 
+## Entry-Edge Overhaul (July 8, 2026)
+
+Data basis: bucket analysis of 441 closed positions (May 27 → Jul 7). Headline: `fee_tvl_ratio >= 1 AND holders < 5000` ran 72% win rate / +$44.49 — equal to the entire era's net profit. Holders 5k-20k ran 47% win / −$21.
+
+**New per-slot screening keys** (all hot-reloadable via slot-aware `update_config`, live values set in both config files):
+
+| Key | Live value | Purpose |
+|---|---|---|
+| `maxHolders` | 5000 | reject late-stage/distribution tokens (data above) |
+| `maxMcap` | 80M → **10M** | >10M mcap ran 33% win (n=9, weak sample but consistent) |
+| `blockMintAuthority` | true | live mint authority = supply-print rug vector (Meteora API `token_x.has_mint_authority`) |
+| `blockFreezeAuthority` | true | freeze authority can lock pool token accounts mid-position |
+| `minNetDepositsChangePct` | −30 | skip pools with LP exodus (`net_deposits_change_pct`) |
+| `minHoldersChangePct` | −2 | skip tokens actively losing holders (distribution) |
+
+Authority + maxHolders checks are re-validated on fresh data in `validateDeployPoolThresholds` (executor.js).
+
+**New signal_snapshot fields** (logging ONLY — mine after ~3 weeks, promote only if they replicate): `lock_pct`, `avg_trade_usd`, `traders_change_pct`, `holders_change_pct`, `net_deposits_change_pct`. Also `quote_price` (SOL/USD) added to condensePool for depth math.
+
+**WINNER PROFILE block added to SCREENER prompt** — tells the LLM to tie-break on fee_tvl>=1 / holders 1k-5k / smart wallets present.
+
+**Four dormant feat/ branches ported onto main** (branches were pre-two-slot; re-applied by hand):
+- `whale-entry.js` — inverse whale-watch: net-buyer pressure + smart-wallet presence (+ OKX smart_money_buy when available) score >= 4 → "🐳 WHALE ENTRY" tag on candidate. Holder-delta signal dormant (needs extra API call).
+- `smart-wallet-quality.js` — every close attributes our PnL to each smart wallet present in the pool (rolling 20, `smart-wallet-performance.json`, gitignored); screening labels each wallet "(last5: 80% wr, +1.2% avg ★)".
+- Multi-timeframe volume trend — token.js now returns `stats_5m`/`stats_30m`; screening block prints 📈 rising / 📉 falling / 🚨 spike_only (5m-rate >2x 1h-rate = likely fake); lone-candidate skip on spike-only without smart wallets.
+- Active-bin depth — dlmm.js `getActiveBin` returns xAmount/yAmount/supply; screening prints thin/moderate/healthy active-bin liquidity (thin = most LP is OOR, high IL). Fixed the branch's hardcoded SOL price by using `quote_price` from pool detail.
+
+**Volume-change verdict**: `volume_change_pct` bucket analysis showed NO monotone edge (63% win on falling vs 55% on rising volume) — do not add it as a filter; the thread's accelerating-volume hypothesis failed replication on this agent's data.
+
 ## Recent Fixes (May 19-27, 2026)
 
 ### ✅ Fixed
