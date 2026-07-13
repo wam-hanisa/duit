@@ -164,6 +164,53 @@ export async function recordPerformance(perf) {
     void pushHiveLesson(lesson);
   }
 
+  // Flat per-trade evaluation log (logs/trades.jsonl) — one self-contained
+  // line per close, joining the tracked position (slot/bins/peak) with the
+  // close outcome so performance analysis never needs a manual join again.
+  try {
+    const { getTrackedPosition } = await import("./state.js");
+    const { recordTrade, categorizeCloseReason } = await import("./trade-log.js");
+    const tracked = perf.position ? getTrackedPosition(perf.position) : null;
+    recordTrade({
+      // identity
+      closed_at: entry.recorded_at,
+      deployed_at: tracked?.deployed_at ?? perf.deployed_at ?? null,
+      position: perf.position ?? null,
+      pool: perf.pool ?? null,
+      pool_name: perf.pool_name ?? null,
+      base_mint: perf.base_mint ?? null,
+      slot: tracked?.slot ?? null,
+      strategy: perf.strategy ?? tracked?.strategy ?? null,
+      // deploy shape
+      amount_sol: perf.amount_sol ?? tracked?.amount_sol ?? null,
+      bin_step: perf.bin_step ?? tracked?.bin_step ?? null,
+      bins_below: tracked?.bin_range?.bins_below ?? null,
+      bins_above: tracked?.bin_range?.bins_above ?? null,
+      // entry context
+      volatility_at_deploy: perf.volatility ?? tracked?.volatility ?? null,
+      fee_tvl_ratio_at_deploy: perf.fee_tvl_ratio ?? tracked?.fee_tvl_ratio ?? null,
+      organic_score: perf.organic_score ?? tracked?.organic_score ?? null,
+      signal_snapshot: entry.signal_snapshot ?? null,
+      // outcome
+      minutes_held: perf.minutes_held ?? null,
+      minutes_in_range: perf.minutes_in_range ?? null,
+      range_efficiency: entry.range_efficiency ?? null,
+      initial_value_usd: perf.initial_value_usd ?? null,
+      final_value_usd: perf.final_value_usd ?? null,
+      fees_earned_usd: perf.fees_earned_usd ?? null,
+      pnl_usd: entry.pnl_usd,
+      pnl_pct: entry.pnl_pct,
+      peak_pnl_pct: tracked?.peak_pnl_pct ?? null,
+      total_fees_claimed_usd: tracked?.total_fees_claimed_usd ?? null,
+      rebalance_count: tracked?.rebalance_count ?? null,
+      close_reason: perf.close_reason ?? null,
+      close_trigger: categorizeCloseReason(perf.close_reason),
+      win: entry.pnl_usd >= 0,
+    });
+  } catch (err) {
+    log("lessons_warn", `trade-log append failed: ${err.message}`);
+  }
+
   // Update pool-level memory
   if (perf.pool) {
     const { recordPoolDeploy } = await import("./pool-memory.js");
